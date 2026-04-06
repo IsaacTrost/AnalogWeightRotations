@@ -4,6 +4,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/opt/conda/bin:$PATH
 ENV CONDA_OVERRIDE_CUDA=12.4
 
+ENV PYTHONPATH=/workspace
+
 RUN apt-get update && apt-get install -y \
     wget git curl ca-certificates bzip2 build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -18,8 +20,11 @@ RUN conda create -y -n aihwkit -c conda-forge -c pytorch -c nvidia \
     aihwkit-gpu \
     pytorch \
     jupyter \
-    matplotlib && \
+    matplotlib \
+    pip && \
     conda clean -afy
+
+RUN conda run -n aihwkit pip install wandb transformers
 
 SHELL ["conda", "run", "-n", "aihwkit", "/bin/bash", "-c"]
 
