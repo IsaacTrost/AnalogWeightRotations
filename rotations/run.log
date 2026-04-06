@@ -1,0 +1,41 @@
+/home/wisaac/school/hpml/project/aihwkit-env/lib64/python3.11/site-packages/torch/cuda/__init__.py:180: UserWarning: CUDA initialization: Unexpected error from cudaGetDeviceCount(). Did you run some cuda functions before calling NumCudaDevices() that might have already set an error? Error 804: forward compatibility was attempted on non supported HW (Triggered internally at /pytorch/c10/cuda/CUDAFunctions.cpp:119.)
+  return torch._C._cuda_getDeviceCount() > 0
+Loading GPT-2 small ...
+Loading weights:   0%|          | 0/148 [00:00<?, ?it/s]Loading weights: 100%|██████████| 148/148 [00:00<00:00, 9700.84it/s]
+  Extracted W shape: torch.Size([3072, 768]), bias shape: torch.Size([3072])
+  Captured 284 activation samples, mean=-0.001, std=0.155
+
+Building rotation matrices ...
+  identity         R R^T - I  Frobenius norm = 0.00e+00
+  sign_flip        R R^T - I  Frobenius norm = 0.00e+00
+  rand_orth        R R^T - I  Frobenius norm = 1.90e-05
+  hadamard         R R^T - I  Frobenius norm = 0.00e+00
+  hadamard_D       R R^T - I  Frobenius norm = 0.00e+00
+  sorted_perm      R R^T - I  Frobenius norm = 0.00e+00
+
+Running 20 trials per (config × rotation) combo [5 × 6 = 30 combos] ...
+  irdrop_only × identity ... rel_err=0.0685 ± 0.0000
+  irdrop_only × sign_flip ... rel_err=0.0685 ± 0.0000
+  irdrop_only × rand_orth ... rel_err=0.0013 ± 0.0000
+  irdrop_only × hadamard ... rel_err=0.0013 ± 0.0000
+  irdrop_only × hadamard_D ... rel_err=0.0013 ± 0.0000
+  irdrop_only × sorted_perm ... rel_err=0.0682 ± 0.0000
+  w_noise_only × identity ... rel_err=0.0907 ± 0.0002
+  w_noise_only × sign_flip ... rel_err=0.0907 ± 0.0002
+  w_noise_only × rand_orth ... rel_err=0.0624 ± 0.0001
+  w_noise_only × hadamard ... rel_err=0.0624 ± 0.0002
+  w_noise_only × hadamard_D ... rel_err=0.0624 ± 0.0001
+  w_noise_only × sorted_perm ... rel_err=0.0905 ± 0.0002
+  inp_quant × identity ... rel_err=0.0734 ± 0.0000
+  inp_quant × sign_flip ... rel_err=0.0734 ± 0.0000
+  inp_quant × rand_orth ... rel_err=0.0282 ± 0.0000
+  inp_quant × hadamard ... rel_err=0.0283 ± 0.0000
+  inp_quant × hadamard_D ... rel_err=0.0283 ± 0.0000
+  inp_quant × sorted_perm ... rel_err=0.0735 ± 0.0000
+  full_pcm × identity ... rel_err=0.1483 ± 0.0010
+  full_pcm × sign_flip ... rel_err=0.1484 ± 0.0011
+  full_pcm × rand_orth ... rel_err=0.0629 ± 0.0004
+  full_pcm × hadamard ... rel_err=0.0640 ± 0.0004
+  full_pcm × hadamard_D ... rel_err=0.0610 ± 0.0004
+  full_pcm × sorted_perm ... rel_err=0.1599 ± 0.0012
+  adv_irdrop × identity ... 
