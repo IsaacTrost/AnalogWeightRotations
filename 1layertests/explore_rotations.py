@@ -44,6 +44,8 @@ Metrics (averaged over N_TRIALS noise realisations)
 """
 
 import os
+import sys
+import datetime
 import warnings
 import numpy as np
 import torch
@@ -52,6 +54,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.linalg import hadamard
 from transformers import GPT2Model, GPT2Tokenizer
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+import wandb
+from wandb_config import WANDB_ENTITY, WANDB_PROJECT, WANDB_MODE
 
 from aihwkit.nn import AnalogLinear
 from aihwkit.simulator.configs import InferenceRPUConfig, TorchInferenceRPUConfigIRDropT
@@ -395,6 +401,16 @@ def run_trials(W: torch.Tensor, b: torch.Tensor, x: torch.Tensor,
 # ---------------------------------------------------------------------------
 
 def main():
+    run_name = f"1layer_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    wandb.login(key=os.getenv("WANDB_API_KEY"))
+    wandb.init(
+        project=WANDB_PROJECT,
+        entity=WANDB_ENTITY,
+        mode=WANDB_MODE,
+        name=run_name,
+        config={"n_trials": N_TRIALS, "in_dim": IN_DIM, "out_dim": OUT_DIM},
+    )
+
     W, b, x = load_gpt2_layer_and_inputs()
 
     # --- Build rotation matrices ---
@@ -481,6 +497,62 @@ def main():
                                 fname="results/output_distributions.png")
 
     print("\nPlots saved to ./results/")
+
+    # --- wandb: results table + native bar charts per metric ---
+    # One bar chart per metric (rel_error, snr_db, cos_sim) using wandb.plot.bar().
+    # Each bar is labelled "config / rotation" so all combos are visible in one chart.
+    cols = ["config", "rotation",
+            "rel_error_mean", "rel_error_std",
+            "snr_db_mean",    "snr_db_std",
+            "cos_sim_mean",   "cos_sim_std"]
+    table = wandb.Table(columns=cols)
+    for cfg_name, rot_dict in results.items():
+        for rot_name, metrics in rot_dict.items():
+            m_re, s_re = metrics["rel_error"]
+            m_sn, s_sn = metrics["snr_db"]
+            m_cs, s_cs = metrics["cos_sim"]
+            table.add_data(cfg_name, rot_name,
+                           m_re, s_re, m_sn, s_sn, m_cs, s_cs)
+    wandb.log({"results_table": table})
+
+    metric_chart_specs = [
+        ("rel_error_mean", "Relative L2 Error (mean)"),
+        ("snr_db_mean",    "Output SNR dB (mean)"),
+        ("cos_sim_mean",   "Cosine Similarity (mean)"),
+    ]
+    for col, title in metric_chart_specs:
+        bar_table = wandb.Table(columns=["config / rotation", col])
+        for cfg_name, rot_dict in results.items():
+            for rot_name, metrics in rot_dict.items():
+                raw_key = col.replace("_mean", "")
+                bar_table.add_data(f"{cfg_name} / {rot_name}", metrics[raw_key][0])
+        wandb.log({col: wandb.plot.bar(bar_table, "config / rotation", col, title=title)})
+
+    # --- wandb: log all saved PNGs ---
+    wandb.log({
+        "rel_error_chart":       wandb.Image("results/rel_error.png"),
+        "snr_db_chart":          wandb.Image("results/snr_db.png"),
+        "cos_sim_chart":         wandb.Image("results/cos_sim.png"),
+        "improvement_heatmap":   wandb.Image("results/improvement_heatmap.png"),
+        "output_distributions":  wandb.Image("results/output_distributions.png"),
+    })
+
+    # --- wandb: error distribution histograms (mirrors output_distributions.png) ---
+    x_cap   = x[:32]
+    y_ideal_flat = (x_cap @ W.T + b.unsqueeze(0)).detach().numpy().flatten()
+    hist_logs = {}
+    for cfg_name, cfg_fn in cfg_fns_only.items():
+        for rot_name, R in rotations.items():
+            x_rot = x_cap @ R.T
+            W_rot = W @ R.T
+            layer = make_analog_layer(W_rot, b, cfg_fn())
+            with torch.no_grad():
+                y_a = layer(x_rot).numpy().flatten()
+            err = y_a - y_ideal_flat
+            hist_logs[f"err_dist/{cfg_name}/{rot_name}"] = wandb.Histogram(err)
+    wandb.log(hist_logs)
+
+    wandb.finish()
 
 
 # ---------------------------------------------------------------------------

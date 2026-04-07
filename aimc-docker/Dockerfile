@@ -26,7 +26,9 @@ RUN conda create -y -n aihwkit -c conda-forge -c pytorch -c nvidia \
 
 RUN conda run -n aihwkit pip install wandb transformers
 
+RUN conda init bash && echo "conda activate aihwkit" >> /root/.bashrc
+
 SHELL ["conda", "run", "-n", "aihwkit", "/bin/bash", "-c"]
 
 WORKDIR /workspace
-CMD ["/bin/bash"]
+CMD ["/bin/bash", "--login"]
