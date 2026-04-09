@@ -1,0 +1,125 @@
+---
+description: Project overview for AnalogWeightRotations — purpose, architecture, SpinQuant relationship, and where to find things
+alwaysApply: true
+---
+
+# AnalogWeightRotations — Project Overview
+
+## Research Goal
+
+This project extends **SpinQuant**-style learned weight rotations from digital quantization to **Analog In-Memory Compute (AIMC)** hardware accuracy. The mathematical mechanism is identical — rotating `W → W R^T` and `x → Rx` is an exact equivalence that preserves `y = Wx` in float — but the objective is fundamentally different.
+
+**SpinQuant** optimizes rotations to minimize outliers / kurtosis in weights and activations, which reduces rounding error in INT4/INT8 quantization. This project replaces that loss function with a **multi-objective analog hardware loss** that accounts for the distinct failure modes of crossbar arrays: IR drop, conductance noise, and ADC/DAC quantization. The goal is to find rotation matrices that make weights "AIMC-friendly" without retraining.
+
+The subject model is **GPT-2 small** (Hugging Face), focused on MLP layers. This may expand to larger models.
+
+---
+
+## What SpinQuant Does (our starting point)
+
+SpinQuant (Meta, 2024) is a post-training quantization technique that learns optimal rotation matrices via **Cayley SGD on the Stiefel manifold** (the space of orthogonal matrices):
+
+- Applies a single `R1` to the hidden dimension and per-head `R2` matrices to attention projections
+- Initializes from a random Hadamard matrix
+- Optimizes `R1`, `R2` to minimize quantization loss (kurtosis / outlier reduction) on a small calibration set
+- Random rotations have high variance (up to 13pt accuracy swing) — learning fixes this
+
+**Our modification:** swap or augment the quantization loss with an analog hardware loss. The rotation search engine (Cayley SGD / Stiefel manifold) can remain largely the same; the loss surface changes.
+
+Reference: [`facebookresearch/SpinQuant`](https://github.com/facebookresearch/SpinQuant)
+
+---
+
+## AIMC Non-Idealities We Target
+
+| Non-ideality | Description |
+|---|---|
+| **IR Drop** | Voltage loss along resistive wires; creates a spatial gradient — weights far from ADCs are more degraded |
+| **Conductance Noise** | Physical noise on programmed conductance values (analog weight noise) |
+| **Quantization** | ADC/DAC precision limits on both weights and activations |
+| **Full PCM** | Phase-change memory model capturing all of the above together |
+
+Traditional mitigation is **Hardware-Aware Training (HAT)** — retraining with simulated noise in the loop. This project aims to replace or reduce that with a cheap post-training rotation pass.
+
+---
+
+## Tech Stack
+
+| Layer | Tool |
+|---|---|
+| ML framework | PyTorch + Transformers (HuggingFace GPT-2) |
+| Analog simulation | `aihwkit-gpu` (IBM Analog AI Hardware Kit) |
+| Rotation optimization | Cayley SGD / Stiefel manifold (SpinQuant-style) |
+| Experiment tracking | Weights & Biases (`wandb`) |
+| Runtime | Docker container (`aimc-docker/`) + Conda env `aihwkit`, Python 3.11 |
+| Analysis | Jupyter (`experiments/`) |
+
+**Everything runs inside the Docker container.** To enter: build from `aimc-docker/Dockerfile`, then `docker run` with GPU access and the repo mounted at `/workspace`. All `python` commands below assume the `aihwkit` Conda env: `conda run -n aihwkit python ...`
+
+---
+
+## File Map
+
+```
+src/                          ← reusable, modular library — all new components go here
+  baseline_forward.py         # Full GPT-2 forward pass with W&B logging and layer hooks
+  rotation_utils.py           # Orthogonal / Hadamard rotation math (pure functions)
+  apply_rotation.py           # Apply rotation to a layer; inverse sanity check vs baseline
+  wandb_config.py             # Shared W&B project/entity defaults
+  [loss.py]                   # (planned) Multi-objective analog hardware loss functions
+  [optimizer.py]              # (planned) Stiefel manifold / Cayley SGD rotation search
+  [tile_analysis.py]          # (planned) Per-tile failure diagnostics
+
+experiments/
+  rotation_experiments.ipynb  # Interactive exploration notebook
+
+1layertests/
+  explore_rotations.py        # Single-layer tests: rotation types × analog HW configs
+  plot_results.py             # Visualizes W&B results tables
+  wandb/                      # Cached W&B run artifacts (logs, config, result tables)
+
+aimc-docker/
+  Dockerfile                  # CUDA 12.8 base, Conda env with aihwkit-gpu, PyTorch, Jupyter
+  smoke_test.py               # Sanity-check for Docker image
+```
+
+### `src/` Modularity Principle
+
+`src/` is the shared library. Every reusable component — loss functions, rotation types, optimizers, hardware configs, evaluation metrics — belongs here as a standalone importable module. Scripts in `1layertests/` and `experiments/` import from `src/`; they do not re-implement logic. When adding new functionality, place it in `src/` first, then call it from the experiment script.
+
+---
+
+## Project Timeline (8 Weeks)
+
+| Weeks | Phase | Focus |
+|---|---|---|
+| 1–2 | Diagnostics | Tile failure analysis on GPT-2 layers; identify worst-case hardware effects |
+| 3–4 | Math & Code | Define multi-objective loss; modify SpinQuant optimization loop for AIMC loss |
+| 5–6 | Optimization | Run rotation search; visualize pre/post distributions and tile outputs |
+| 7 | Benchmarking | Full model inference via AIHWKit; baseline vs SpinQuant vs our rotation |
+| 8 | Report | Quantify HAT bypass potential; recommendations for AIMC-aware model design |
+
+---
+
+## Key Concepts
+
+- **Rotation types** (current): `identity`, `sign_flip`, `rand_orth`, `hadamard`, `hadamard_D`, `sorted_perm`
+- **Rotation types** (planned): learned via Cayley SGD on Stiefel manifold (SpinQuant engine)
+- **Metrics**: `rel_error`, `snr_db`, `cos_sim` relative to float baseline
+- **Analog configs tested**: IR drop, weight noise, quantization, full PCM
+
+---
+
+## Where to Start for Common Tasks
+
+| Task | Look here |
+|---|---|
+| Understand rotation math | `src/rotation_utils.py` |
+| Add a new rotation type | `src/rotation_utils.py`, then wire into `1layertests/explore_rotations.py` |
+| Define a new hardware loss | `src/loss.py` (create if absent) |
+| Implement rotation optimizer | `src/optimizer.py` (create if absent), modeled on SpinQuant's `optimize_rotation.py` |
+| Change analog HW configs | `1layertests/explore_rotations.py` (RPU configs inline, move to `src/` when reused) |
+| Full GPT-2 pipeline | `src/baseline_forward.py` → `src/apply_rotation.py` |
+| Visualize results | `1layertests/plot_results.py` |
+| Rebuild the environment | `aimc-docker/Dockerfile` |
+| Reference SpinQuant | https://github.com/facebookresearch/SpinQuant |
