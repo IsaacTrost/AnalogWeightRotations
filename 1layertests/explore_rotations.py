@@ -60,12 +60,7 @@ import wandb
 from wandb_config import WANDB_ENTITY, WANDB_PROJECT, WANDB_MODE
 
 from aihwkit.nn import AnalogLinear
-from aihwkit.simulator.configs import InferenceRPUConfig, TorchInferenceRPUConfigIRDropT
-from aihwkit.simulator.parameters.enums import (
-    WeightNoiseType, BoundManagementType, NoiseManagementType
-)
-from aihwkit.inference import PCMLikeNoiseModel, GlobalDriftCompensation
-from aihwkit.inference.converter.conductance import SinglePairConductanceConverter
+from hardware_configs import build_rpu_config, requires_program_analog_weights
 
 warnings.filterwarnings("ignore")
 os.makedirs("results", exist_ok=True)
@@ -151,107 +146,7 @@ def make_sorted_perm(n: int, ref_activations: torch.Tensor) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
-# 2. Build analog RPU configs
-# ---------------------------------------------------------------------------
-
-def cfg_irdrop_only() -> InferenceRPUConfig:
-    """IR drop only — all weight/input/output noise disabled."""
-    cfg = InferenceRPUConfig()
-    cfg.forward.ir_drop       = 1.0
-    cfg.forward.w_noise       = 0.0
-    cfg.forward.w_noise_type  = WeightNoiseType.NONE
-    cfg.forward.inp_noise     = 0.0
-    cfg.forward.out_noise     = 0.0
-    cfg.forward.inp_res       = -1.0   # no input quantization
-    cfg.forward.out_res       = -1.0   # no output quantization
-    cfg.forward.out_bound     = -1.0
-    cfg.forward.bound_management  = BoundManagementType.NONE
-    cfg.forward.noise_management  = NoiseManagementType.NONE
-    return cfg
-
-
-def cfg_w_noise_only() -> InferenceRPUConfig:
-    """Additive weight noise only — no IR drop or quantization."""
-    cfg = InferenceRPUConfig()
-    cfg.forward.ir_drop       = 0.0
-    cfg.forward.w_noise       = 0.02
-    cfg.forward.w_noise_type  = WeightNoiseType.ADDITIVE_CONSTANT
-    cfg.forward.inp_noise     = 0.0
-    cfg.forward.out_noise     = 0.0
-    cfg.forward.inp_res       = -1.0
-    cfg.forward.out_res       = -1.0
-    cfg.forward.out_bound     = -1.0
-    cfg.forward.bound_management  = BoundManagementType.NONE
-    cfg.forward.noise_management  = NoiseManagementType.NONE
-    return cfg
-
-
-def cfg_inp_quant() -> InferenceRPUConfig:
-    """8-bit input + output quantization only — no noise, no IR drop."""
-    cfg = InferenceRPUConfig()
-    cfg.forward.ir_drop       = 0.0
-    cfg.forward.w_noise       = 0.0
-    cfg.forward.w_noise_type  = WeightNoiseType.NONE
-    cfg.forward.inp_noise     = 0.0
-    cfg.forward.out_noise     = 0.0
-    cfg.forward.inp_res       = 2**8 - 2   # 8-bit DAC
-    cfg.forward.out_res       = 2**8 - 2   # 8-bit ADC
-    cfg.forward.bound_management  = BoundManagementType.NONE
-    cfg.forward.noise_management  = NoiseManagementType.NONE
-    return cfg
-
-
-def cfg_full_pcm() -> InferenceRPUConfig:
-    """
-    Realistic PCM inference: PCM-like weight noise, IR drop, and 10-bit ADC/DAC.
-    Models a typical Phase-Change Memory crossbar at inference time.
-    """
-    cfg = InferenceRPUConfig()
-    cfg.noise_model = PCMLikeNoiseModel(
-        g_max=25.0,
-        prog_noise_scale=1.0,
-        read_noise_scale=1.0,
-        drift_scale=0.0,          # no temporal drift for this comparison
-        g_converter=SinglePairConductanceConverter(g_min=0.1, g_max=25.0),
-    )
-    cfg.forward.ir_drop           = 0.5
-    cfg.forward.w_noise           = 0.0   # weight noise comes from noise_model
-    cfg.forward.inp_noise         = 0.0
-    cfg.forward.out_noise         = 0.0
-    cfg.forward.inp_res           = 2**10 - 2
-    cfg.forward.out_res           = 2**10 - 2
-    cfg.forward.bound_management  = BoundManagementType.NONE
-    cfg.forward.noise_management  = NoiseManagementType.NONE
-    cfg.drift_compensation        = GlobalDriftCompensation()
-    return cfg
-
-
-def cfg_adv_irdrop() -> TorchInferenceRPUConfigIRDropT:
-    """
-    Advanced time-dependent IR drop (TorchInferenceRPUConfigIRDropT).
-    Models resistive-line voltage drop that evolves during the PWM pulse.
-
-    Note: segment count kept low (4) — the 4D Thevenin tensor is
-    O(segments × batch × out × in), which OOMs at large layer sizes.
-    """
-    cfg = TorchInferenceRPUConfigIRDropT()
-    cfg.forward.ir_drop           = 1.0
-    cfg.forward.ir_drop_segments  = 4    # was 16; memory = segments*batch*out*in
-    cfg.forward.ir_drop_v_read    = 0.4
-    cfg.forward.w_noise           = 0.0
-    cfg.forward.w_noise_type      = WeightNoiseType.NONE
-    cfg.forward.inp_noise         = 0.0
-    cfg.forward.out_noise         = 0.0
-    cfg.forward.inp_res           = 2**10 - 2
-    cfg.forward.out_res           = -1.0
-    cfg.forward.out_bound         = -1.0
-    cfg.forward.bound_management  = BoundManagementType.NONE
-    cfg.forward.noise_management  = NoiseManagementType.NONE
-    return cfg
-
-
-# ---------------------------------------------------------------------------
-# 3. Load GPT-2 layer + real activations
+# 2. Load GPT-2 layer + real activations
 # ---------------------------------------------------------------------------
 
 def load_gpt2_layer_and_inputs(n_texts: int = 20):
@@ -316,7 +211,7 @@ def load_gpt2_layer_and_inputs(n_texts: int = 20):
 
 
 # ---------------------------------------------------------------------------
-# 4. Evaluation helpers
+# 3. Evaluation helpers
 # ---------------------------------------------------------------------------
 
 def make_analog_layer(W_rot: torch.Tensor, b: torch.Tensor,
@@ -358,8 +253,8 @@ def eval_analog(layer: AnalogLinear, x_rot: torch.Tensor,
 
 
 def run_trials(W: torch.Tensor, b: torch.Tensor, x: torch.Tensor,
-               R: torch.Tensor, rpu_config_fn, n_trials: int,
-               post_init=None) -> dict:
+               R: torch.Tensor, hardware_preset: str, n_trials: int
+               ) -> dict:
     """
     Apply rotation R, create N_TRIALS independent analog layers (different
     noise seeds), evaluate each, and return mean ± std of metrics.
@@ -382,11 +277,13 @@ def run_trials(W: torch.Tensor, b: torch.Tensor, x: torch.Tensor,
     metrics = {"rel_error": [], "snr_db": [], "cos_sim": []}
 
     for _ in range(n_trials):
-        cfg   = rpu_config_fn()
+        cfg   = build_rpu_config(hardware_preset)
         layer = make_analog_layer(W_rot, b, cfg)
-        if post_init is not None:
-            post_init(layer)
-        m     = eval_analog(layer, x_rot, y_ideal)
+        
+        if requires_program_analog_weights(hardware_preset):
+            layer.program_analog_weights()
+
+        m = eval_analog(layer, x_rot, y_ideal)
         for k in metrics:
             metrics[k].append(m[k])
 
@@ -397,7 +294,7 @@ def run_trials(W: torch.Tensor, b: torch.Tensor, x: torch.Tensor,
 
 
 # ---------------------------------------------------------------------------
-# 5. Main experiment
+# 4. Main experiment
 # ---------------------------------------------------------------------------
 
 def main():
@@ -434,10 +331,10 @@ def main():
     # post_init is called on the layer after weight loading to activate
     # noise models that require an explicit programming step.
     configs = {
-        "irdrop_only":  (cfg_irdrop_only,  None),
-        "w_noise_only": (cfg_w_noise_only, None),
-        "inp_quant":    (cfg_inp_quant,    None),
-        "full_pcm":     (cfg_full_pcm,     lambda l: l.program_analog_weights()),
+        "irdrop_only": "irdrop_only",
+        "w_noise_only": "w_noise_only",
+        "inp_quant": "inp_quant",
+        "full_pcm": "full_pcm",
         # adv_irdrop excluded: TorchInferenceRPUConfigIRDropT is too slow for
         # large layers (768x3072) — each trial takes ~10 min on CPU.
     }
@@ -447,11 +344,11 @@ def main():
           f"[{len(configs)} × {len(rotations)} = {len(configs)*len(rotations)} combos] ...")
 
     results = {}   # results[config][rotation] = {metric: (mean, std)}
-    for cfg_name, (cfg_fn, post_init) in configs.items():
+    for cfg_name, hardware_preset in configs.items():
         results[cfg_name] = {}
         for rot_name, R in rotations.items():
             print(f"  {cfg_name} × {rot_name} ...", end=" ", flush=True)
-            res = run_trials(W, b, x, R, cfg_fn, N_TRIALS, post_init=post_init)
+            res = run_trials(W, b, x, R, hardware_preset, N_TRIALS)
             results[cfg_name][rot_name] = res
             print(f"rel_err={res['rel_error'][0]:.4f} ± {res['rel_error'][1]:.4f}")
 
@@ -473,7 +370,7 @@ def main():
     # --- Plots ---
     # For plotting we only need the config names (not the post_init fns)
     cfg_names_only = list(configs.keys())
-    cfg_fns_only   = {k: v[0] for k, v in configs.items()}
+    cfg_presets_only = dict(configs)
 
     _plot_bar_charts(results, rotations, cfg_names_only, metric="rel_error",
                      ylabel="Relative L2 error  ||y_a - y_f|| / ||y_f||",
@@ -493,7 +390,7 @@ def main():
     _plot_improvement_heatmap(results, rotations, cfg_names_only,
                               fname="results/improvement_heatmap.png")
 
-    _plot_output_distributions(W, b, x, rotations, cfg_fns_only,
+    _plot_output_distributions(W, b, x, rotations, cfg_presets_only,
                                 fname="results/output_distributions.png")
 
     print("\nPlots saved to ./results/")
@@ -541,13 +438,20 @@ def main():
     x_cap   = x[:32]
     y_ideal_flat = (x_cap @ W.T + b.unsqueeze(0)).detach().numpy().flatten()
     hist_logs = {}
-    for cfg_name, cfg_fn in cfg_fns_only.items():
+    for cfg_name, hardware_preset in cfg_presets_only.items():
         for rot_name, R in rotations.items():
             x_rot = x_cap @ R.T
             W_rot = W @ R.T
-            layer = make_analog_layer(W_rot, b, cfg_fn())
+
+            cfg = build_rpu_config(hardware_preset)
+            layer = make_analog_layer(W_rot, b, cfg)
+
+            if requires_program_analog_weights(hardware_preset):
+                layer.program_analog_weights()
+
             with torch.no_grad():
                 y_a = layer(x_rot).numpy().flatten()
+
             err = y_a - y_ideal_flat
             hist_logs[f"err_dist/{cfg_name}/{rot_name}"] = wandb.Histogram(err)
     wandb.log(hist_logs)
@@ -556,7 +460,7 @@ def main():
 
 
 # ---------------------------------------------------------------------------
-# 6. Plotting helpers
+# 5. Plotting helpers
 # ---------------------------------------------------------------------------
 
 ROT_LABELS = {
@@ -651,15 +555,15 @@ def _plot_improvement_heatmap(results, rotations, configs, fname):
     print(f"  Saved {fname}")
 
 
-def _plot_output_distributions(W, b, x, rotations, configs, fname):
+def _plot_output_distributions(W, b, x, rotations, config_presets, fname):
     """
     For each (rotation, config) show histograms of per-element output error
     for a single noise realisation. Shows the error distribution shape.
     """
     n_rot = len(rotations)
-    n_cfg = len(configs)
+    n_cfg = len(config_presets)
     rot_names = list(rotations.keys())
-    cfg_names  = list(configs.keys())
+    cfg_names = list(config_presets.keys())
 
     x = x[:32]  # cap for memory safety (matches run_trials cap)
     # Float ideal
@@ -675,8 +579,13 @@ def _plot_output_distributions(W, b, x, rotations, configs, fname):
             x_rot = x @ R.T
             W_rot = W @ R.T
 
-            cfg   = configs[cfg_name]()
+            hardware_preset = config_presets[cfg_name]
+            cfg = build_rpu_config(hardware_preset)
             layer = make_analog_layer(W_rot, b, cfg)
+
+            if requires_program_analog_weights(hardware_preset):
+                layer.program_analog_weights()
+
             with torch.no_grad():
                 y_a = layer(x_rot).numpy().flatten()
 
