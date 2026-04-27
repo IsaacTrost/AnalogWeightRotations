@@ -11,7 +11,8 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.analog_llama import convert_llama_linears_to_analog
+from src.analog_llama import prepare_analog_model
+from src.hardware_configs import supported_hardware_presets
 from src.llama_model import (
     DEFAULT_MODEL_NAME,
     DEFAULT_TEXTS,
@@ -43,6 +44,7 @@ class PipelineConfig:
     prepare_model: bool = True
     convert_analog: bool = False
     analog_targets: Sequence[str] = ("down_proj",)
+    hardware_preset: str = "ideal_analog"
 
 
 def summarize_rotation_state(rotation_state: dict) -> dict:
@@ -142,12 +144,17 @@ def run_pipeline(config: PipelineConfig) -> dict:
         "rotation_equivalence": compare_verification_runs(prepared, rotated),
         "float_equivalence": compare_verification_runs(baseline, rotated),
         "analog_targets": [],
+        "hardware_preset": None,
     }
 
     if config.convert_analog:
         if config.rotation_backend != "static":
             raise ValueError("Analog conversion currently supports only the static rotation backend.")
-        converted = convert_llama_linears_to_analog(model, target_suffixes=config.analog_targets)
+        converted = prepare_analog_model(
+            model, 
+            target_suffixes=config.analog_targets,
+            hardware_preset=config.hardware_preset,
+        )
         analog_outputs = run_verification_forward(
             model,
             tokenizer,
@@ -155,7 +162,19 @@ def run_pipeline(config: PipelineConfig) -> dict:
             max_length=config.max_length,
         )
         results["analog_targets"] = converted
-        results["analog_comparison"] = compare_verification_runs(baseline, analog_outputs)
+        results["hardware_preset"] = config.hardware_preset
+
+        # This compares original float baseline to analog-after-rotation.
+        results["baseline_to_analog_comparison"] = compare_verification_runs(
+            baseline, 
+            analog_outputs,
+        )
+
+        # This better isolates hardware error introduced by analog conversion.
+        results["rotated_float_to_analog_comparison"] = compare_verification_runs(
+            rotated,
+            analog_outputs,
+        )
 
     return results
 
@@ -203,6 +222,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=["down_proj"],
         help="Module suffixes to swap to AnalogLinear when the analog stage is enabled.",
     )
+    parser.add_argument(
+        "--hardware-preset",
+        default="ideal_analog",
+        choices=list(supported_hardware_presets()),
+        help="AIHWKit hardware-loss preset to use when --convert-analog is enabled.",
+    )
     return parser
 
 
@@ -239,6 +264,7 @@ def main() -> None:
             prepare_model=not args.skip_prepare,
             convert_analog=args.convert_analog,
             analog_targets=tuple(args.analog_targets),
+            hardware_preset=args.hardware_preset,
         )
     )
 
@@ -252,13 +278,21 @@ def main() -> None:
     print_logits_summary("Overall logits diff", results["float_equivalence"])
 
     if results["analog_targets"]:
-        analog_metrics = results["analog_comparison"]["logits"]
+        print("Hardware preset:", results["hardware_preset"])
         print("Analog targets:", ", ".join(results["analog_targets"]))
+        baseline_metrics  = results["analog_comparison"]["logits"]
         print(
             "Analog logits diff:",
-            f"max_abs={analog_metrics['max_abs']:.3e}",
-            f"mean_abs={analog_metrics['mean_abs']:.3e}",
-            f"rel_l2={analog_metrics['rel_l2']:.3e}",
+            f"max_abs={baseline_metrics ['max_abs']:.3e}",
+            f"mean_abs={baseline_metrics ['mean_abs']:.3e}",
+            f"rel_l2={baseline_metrics ['rel_l2']:.3e}",
+        )
+        isolated_metrics = results["rotated_float_to_analog_comparison"]["logits"]
+        print(
+            "Rotated float -> analog logits diff:",
+            f"max_abs={isolated_metrics['max_abs']:.3e}",
+            f"mean_abs={isolated_metrics['mean_abs']:.3e}",
+            f"rel_l2={isolated_metrics['rel_l2']:.3e}",
         )
 
 
