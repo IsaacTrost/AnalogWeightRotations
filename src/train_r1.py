@@ -30,7 +30,7 @@ class TrainR1Config:
 
     model_name: str = DEFAULT_MODEL_NAME
     torch_dtype: Optional[torch.dtype] = torch.float32
-    init_mode: str = "identity"
+    init_mode: str = "hadamard"
     seed: int = 0
 
     lr: float = 1e-3
@@ -134,17 +134,24 @@ def train_r1(config: TrainR1Config) -> dict:
         total_loss.backward()
         optimizer.step()
 
+        grad_norm = float(rotation.R.grad.norm()) if rotation.R.grad is not None else float("nan")
+        eye = torch.eye(rotation.dim, device=rotation.R.device, dtype=rotation.R.dtype)
+        r_dist = float((rotation.R.detach() - eye).norm())
+
         record = {
             "step": step,
             "task_loss": float(task_loss.detach()),
             "aux_loss": float(aux_loss.detach()),
             "total_loss": float(total_loss.detach()),
+            "grad_norm": grad_norm,
+            "r_dist": r_dist,
         }
         history.append(record)
         if step % config.log_every == 0:
             print(
                 f"step {step:4d}  task={record['task_loss']:.4f}  "
-                f"aux={record['aux_loss']:.4f}  total={record['total_loss']:.4f}"
+                f"aux={record['aux_loss']:.4f}  total={record['total_loss']:.4f}  "
+                f"grad={grad_norm:.3e}  |R-I|={r_dist:.3e}"
             )
 
     return {
@@ -165,7 +172,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--init-mode",
-        default="identity",
+        default="hadamard",
         choices=["identity", "sign_flip", "random", "hadamard", "block_hadamard", "hadamard_D"],
     )
     parser.add_argument("--seed", type=int, default=0)

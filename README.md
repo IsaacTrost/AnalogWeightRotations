@@ -18,8 +18,32 @@ $ export WANDB_PROJECT=aimc-rotations
 
 Mind the directory I run it in isn't aimc-docker:
 `
-(base) ao2844_columbia_edu@instance-20260325-210342:~/AnalogWeightRotations$ sudo docker run --gpus all -it --rm   -p 8888:8888   -v $(pwd):/workspace   -e WANDB_API_KEY=$WANDB_API_KEY   -e WANDB_ENTITY=$WANDB_ENTITY   -e WANDB_PROJECT=$WANDB_PROJECT   aihwkit-min
+(base) ao2844_columbia_edu@instance-20260325-210342:~/AnalogWeightRotations$ sudo docker run --gpus all -it --rm   -p 8888:8888   -v $(pwd):/workspace   -v /mnt/bigdisk/models:/mnt/bigdisk/models   -e WANDB_API_KEY=$WANDB_API_KEY   -e WANDB_ENTITY=$WANDB_ENTITY   -e WANDB_PROJECT=$WANDB_PROJECT   aihwkit-min
 `
+
+Models are cached to `/mnt/bigdisk/models` (the `HF_CACHE_DIR` default in the script). To override: `-e HF_CACHE_DIR=/your/path`.
+
+The HuggingFace model cache is stored at `/var/cache/huggingface` and shared across all users on the machine. This avoids re-downloading large models for each user or run. To set it up:
+
+```bash
+sudo mkdir -p /var/cache/huggingface
+sudo chmod 777 /var/cache/huggingface
+```
+
+To use a different location, change the `-v` mount in the docker run command and set `HF_HOME` accordingly:
+
+```bash
+# Custom cache location
+export HF_CACHE=/your/preferred/path
+sudo mkdir -p $HF_CACHE && sudo chmod 777 $HF_CACHE
+docker run ... -v $HF_CACHE:/root/.cache/huggingface ...
+```
+
+Outside Docker, point HuggingFace at the shared cache by setting:
+```bash
+export HF_HOME=/var/cache/huggingface
+```
+Add this to `/etc/environment` to apply system-wide for all users.
 
 `
 $ conda run -n aihwkit python -m src.baseline_forward
