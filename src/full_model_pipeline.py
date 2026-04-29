@@ -280,12 +280,13 @@ def main() -> None:
     if results["analog_targets"]:
         print("Hardware preset:", results["hardware_preset"])
         print("Analog targets:", ", ".join(results["analog_targets"]))
-        baseline_metrics  = results["analog_comparison"]["logits"]
+
+        baseline_metrics = results["baseline_to_analog_comparison"]["logits"]
         print(
-            "Analog logits diff:",
-            f"max_abs={baseline_metrics ['max_abs']:.3e}",
-            f"mean_abs={baseline_metrics ['mean_abs']:.3e}",
-            f"rel_l2={baseline_metrics ['rel_l2']:.3e}",
+            "Baseline -> analog logits diff:",
+            f"max_abs={baseline_metrics['max_abs']:.3e}",
+            f"mean_abs={baseline_metrics['mean_abs']:.3e}",
+            f"rel_l2={baseline_metrics['rel_l2']:.3e}",
         )
         isolated_metrics = results["rotated_float_to_analog_comparison"]["logits"]
         print(
