@@ -54,7 +54,9 @@ Traditional mitigation is **Hardware-Aware Training (HAT)** — retraining with 
 | Runtime | Docker container (`aimc-docker/`) + Conda env `aihwkit`, Python 3.11 |
 | Analysis | Jupyter (`experiments/`) |
 
-**Everything runs inside the Docker container.** To enter: build from `aimc-docker/Dockerfile`, then `docker run` with GPU access and the repo mounted at `/workspace`. All `python` commands below assume the `aihwkit` Conda env: `conda run -n aihwkit python ...`
+**Everything runs inside the Docker container.** Start the project runtime with `./run.sh` from the repo root before running project commands. Treat that script as the default entrypoint for the containerized Conda environment.
+
+**Do not run project Python commands on the host by default.** After starting `./run.sh`, run commands inside the container and use the `aihwkit` Conda env for Python tooling, for example: `conda run -n aihwkit python ...`
 
 ---
 
