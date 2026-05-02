@@ -1,0 +1,12 @@
+wandb: [wandb.login()] Using explicit session credentials for https://api.wandb.ai.
+wandb: Appending key for api.wandb.ai to your netrc file: /root/.netrc
+wandb: Currently logged in as: wisaactrost (ao2844-columbia-university) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run dhpg562b
+wandb: Tracking run with wandb version 0.26.0
+wandb: Run data is saved locally in /workspace/wandb/run-20260501_013238-dhpg562b
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run train_rotations_random_r2=True
+wandb: ⭐️ View project at https://wandb.ai/ao2844-columbia-university/analog_rotation_dual_loss
+wandb: 🚀 View run at https://wandb.ai/ao2844-columbia-university/analog_rotation_dual_loss/runs/dhpg562b
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]Loading weights:  21%|██▏       | 43/201 [00:00<00:00, 398.04it/s]Loading weights:  48%|████▊     | 97/201 [00:00<00:00, 478.19it/s]Loading weights:  76%|███████▌  | 152/201 [00:00<00:00, 507.98it/s]Loading weights: 100%|██████████| 201/201 [00:00<00:00, 510.52it/s]

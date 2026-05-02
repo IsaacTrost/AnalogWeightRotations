@@ -182,6 +182,28 @@ $ conda run -n aihwkit python 1layertests/explore_rotations.py
 
 Results and plots are saved to `1layertests/results/` and logged to W&B under the configured project.
 
+## Analog perplexity evaluation
+
+Evaluate a trained full-analog R1/R2 checkpoint by baking the rotations into a prepared LLaMA-style model, converting selected projections to AIHWKit, and measuring packed-token WikiText perplexity:
+
+```bash
+# Fast smoke test inside the Docker container.
+conda run -n aihwkit python -m src.eval_analog_perplexity \
+  --checkpoint checkpoints/full_analog.pt \
+  --hardware-preset ideal_analog \
+  --analog-targets down_proj \
+  --max-eval-tokens 2048
+
+# Hardware nonideality run with the full PCM preset and SpinQuant online R3/R4.
+conda run -n aihwkit python -m src.eval_analog_perplexity \
+  --checkpoint checkpoints/full_analog.pt \
+  --hardware-preset full_pcm \
+  --online-hadamards \
+  --max-eval-tokens 8192
+```
+
+Each run reports `float_prepared`, `analog_identity`, and `analog_rotated` so the hardware-only baseline and trained-rotation result are directly comparable.
+
 ## Regenerating plots without re-running
 
 `plot_results.py` hardcodes the completed run's output and regenerates all figures locally:

@@ -178,6 +178,11 @@ class RuntimeRotatedLinear(torch.nn.Module):
             head_dim=self.head_dim,
         )
 
+    def effective_weight(self) -> torch.Tensor:
+        """Return the rotated weight tensor, keeping R in the autograd graph."""
+        weight, _ = self._rotated_weight_and_bias()
+        return weight
+
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         """Run the wrapped linear layer with the effective rotated weight."""
         weight, bias = self._rotated_weight_and_bias()
