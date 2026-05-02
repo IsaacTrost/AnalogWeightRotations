@@ -77,7 +77,9 @@ def build_ir_drop_only_config():
     cfg.forward.out_res = -1.0
     cfg.forward.out_bound = -1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
-    cfg.forward.noise_management = aihw["NoiseManagementType"].NONE
+    cfg.forward.noise_management = aihw["NoiseManagementType"].ABS_MAX
+    cfg.noise_model = None
+    cfg.drift_compensation = None
     return cfg
 
 
@@ -99,7 +101,9 @@ def build_weight_noise_only_config():
     cfg.forward.out_res = -1.0
     cfg.forward.out_bound = -1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
-    cfg.forward.noise_management = aihw["NoiseManagementType"].NONE
+    cfg.forward.noise_management = aihw["NoiseManagementType"].ABS_MAX
+    cfg.noise_model = None
+    cfg.drift_compensation = None
     return cfg
 
 
@@ -119,8 +123,19 @@ def build_quant_only_config():
     cfg.forward.out_noise = 0.0
     cfg.forward.inp_res = 2**8 - 2
     cfg.forward.out_res = 2**8 - 2
+    cfg.forward.out_bound = 1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
-    cfg.forward.noise_management = aihw["NoiseManagementType"].NONE
+    cfg.forward.noise_management = aihw["NoiseManagementType"].ABS_MAX
+    cfg.noise_model = None
+    cfg.drift_compensation = None
+    return cfg
+
+
+def build_quant_10bit_config():
+    """10-bit DAC + ADC quantization preset with calibrated AIHWKit scaling."""
+    cfg = build_quant_only_config()
+    cfg.forward.inp_res = 2**10 - 2
+    cfg.forward.out_res = 2**10 - 2
     return cfg
 
 
@@ -152,8 +167,9 @@ def build_full_pcm_config():
     cfg.forward.out_noise = 0.0
     cfg.forward.inp_res = 2**10 - 2
     cfg.forward.out_res = 2**10 - 2
+    cfg.forward.out_bound = 1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
-    cfg.forward.noise_management = aihw["NoiseManagementType"].NONE
+    cfg.forward.noise_management = aihw["NoiseManagementType"].ABS_MAX
     cfg.drift_compensation = aihw["GlobalDriftCompensation"]()
     return cfg
 
@@ -190,6 +206,7 @@ HARDWARE_PRESET_BUILDERS: Dict[str, Callable[[], object]] = {
     "ideal_analog": build_ideal_analog_config,
     "ir_drop_only": build_ir_drop_only_config,
     "weight_noise_only": build_weight_noise_only_config,
+    "quant_10bit": build_quant_10bit_config,
     "quant_only": build_quant_only_config,
     "full_stack": build_full_pcm_config,
     "advanced_ir_drop": build_advanced_ir_drop_config,

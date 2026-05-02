@@ -10,6 +10,7 @@ Example:
 import argparse
 import json
 import math
+import os
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -31,6 +32,7 @@ from src.llama_rotation import (
     generated_rotation_state,
     identity_rotation_state,
 )
+from src.wandb_config import WANDB_ENTITY, WANDB_MODE, WANDB_PROJECT
 
 
 DEFAULT_ANALOG_TARGETS = (
@@ -67,6 +69,8 @@ class AnalogPerplexityConfig:
     run_float_prepared: bool = True
     run_analog_identity: bool = True
     run_analog_rotated: bool = True
+    use_wandb: bool = False
+    wandb_name: Optional[str] = None
 
 
 def _load_dataset_text(dataset: str, split: str) -> str:
@@ -306,6 +310,39 @@ def _print_results(results: dict) -> None:
         )
 
 
+def _log_wandb(results: dict, run_name: Optional[str] = None) -> None:
+    import wandb
+
+    wandb.login(key=os.getenv("WANDB_API_KEY"))
+    config = {key: value for key, value in results.items() if key != "runs"}
+    run = wandb.init(
+        entity=WANDB_ENTITY,
+        project=WANDB_PROJECT,
+        mode=WANDB_MODE,
+        name=run_name
+        or (
+            f"eval_{results['hardware_preset']}_"
+            f"{results['rotation_mode']}_tok={results.get('loaded_tokens', 0)}"
+        ),
+        config=config,
+        job_type="analog_perplexity_eval",
+    )
+    for run_label, metrics in results["runs"].items():
+        wandb.log(
+            {
+                f"{run_label}/nll": metrics["nll"],
+                f"{run_label}/ppl": metrics["ppl"],
+                f"{run_label}/tokens": metrics["tokens"],
+            }
+        )
+    summary = run.summary
+    for run_label, metrics in results["runs"].items():
+        summary[f"{run_label}_nll"] = metrics["nll"]
+        summary[f"{run_label}_ppl"] = metrics["ppl"]
+        summary[f"{run_label}_tokens"] = metrics["tokens"]
+    wandb.finish()
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Evaluate trained R1/R2 rotations on AIHWKit analog perplexity."
@@ -366,6 +403,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-float-prepared", action="store_true")
     parser.add_argument("--skip-analog-identity", action="store_true")
     parser.add_argument("--skip-analog-rotated", action="store_true")
+    parser.add_argument("--use-wandb", action="store_true")
+    parser.add_argument("--wandb-name", default=None)
     parser.add_argument("--json-output", default=None)
     return parser
 
@@ -393,10 +432,15 @@ def main() -> None:
         run_float_prepared=not args.skip_float_prepared,
         run_analog_identity=not args.skip_analog_identity,
         run_analog_rotated=not args.skip_analog_rotated,
+        use_wandb=args.use_wandb,
+        wandb_name=args.wandb_name,
     )
     results = run_evaluation(config)
     _print_results(results)
+    if config.use_wandb:
+        _log_wandb(results, run_name=config.wandb_name)
     if args.json_output:
+        os.makedirs(os.path.dirname(os.path.abspath(args.json_output)), exist_ok=True)
         with open(args.json_output, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
 

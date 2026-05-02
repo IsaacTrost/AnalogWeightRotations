@@ -1,0 +1,70 @@
+===== quant_10bit ABS_MAX full_cpu_512 =====
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]
+Loading weights:  16%|█▌        | 32/201 [00:00<00:00, 294.86it/s]
+Loading weights:  42%|████▏     | 85/201 [00:00<00:00, 400.79it/s]
+Loading weights:  65%|██████▍   | 130/201 [00:00<00:00, 404.56it/s]
+Loading weights:  91%|█████████ | 182/201 [00:00<00:00, 445.41it/s]
+Loading weights: 100%|██████████| 201/201 [00:00<00:00, 437.84it/s]
+
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]
+Loading weights:  20%|█▉        | 40/201 [00:00<00:00, 361.60it/s]
+Loading weights:  47%|████▋     | 95/201 [00:00<00:00, 465.67it/s]
+Loading weights:  72%|███████▏  | 145/201 [00:00<00:00, 476.80it/s]
+Loading weights: 100%|██████████| 201/201 [00:00<00:00, 488.25it/s]
+
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]
+Loading weights:   0%|          | 1/201 [00:00<00:20,  9.60it/s]
+Loading weights:  43%|████▎     | 86/201 [00:00<00:00, 486.51it/s]
+Loading weights:  74%|███████▎  | 148/201 [00:00<00:00, 529.42it/s]
+Loading weights: 100%|██████████| 201/201 [00:00<00:00, 502.96it/s]
+wandb: [wandb.login()] Using explicit session credentials for https://api.wandb.ai.
+wandb: Appending key for api.wandb.ai to your netrc file: /root/.netrc
+wandb: Currently logged in as: wisaactrost (ao2844-columbia-university) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run frt81hok
+wandb: Tracking run with wandb version 0.26.1
+wandb: Run data is saved locally in /workspace/wandb/run-20260502_193528-frt81hok
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run full_cpu_quant_10bit_absmax_hadamardD_512
+wandb: ⭐️ View project at https://wandb.ai/ao2844-columbia-university/analog_rotation_dual_loss
+wandb: 🚀 View run at https://wandb.ai/ao2844-columbia-university/analog_rotation_dual_loss/runs/frt81hok
+wandb: updating run metadata; uploading summary
+wandb: uploading requirements.txt; uploading wandb-summary.json; uploading config.yaml; uploading wandb-metadata.json
+wandb: 
+wandb: Run history:
+wandb:    analog_identity/nll ▁
+wandb:    analog_identity/ppl ▁
+wandb: analog_identity/tokens ▁
+wandb:     analog_rotated/nll ▁
+wandb:     analog_rotated/ppl ▁
+wandb:  analog_rotated/tokens ▁
+wandb:     float_prepared/nll ▁
+wandb:     float_prepared/ppl ▁
+wandb:  float_prepared/tokens ▁
+wandb: 
+wandb: Run summary:
+wandb:    analog_identity/nll 7.1343
+wandb:    analog_identity/ppl 1254.25301
+wandb: analog_identity/tokens 508
+wandb:    analog_identity_nll 7.1343
+wandb:    analog_identity_ppl 1254.25301
+wandb: analog_identity_tokens 508
+wandb:     analog_rotated/nll 5.73482
+wandb:     analog_rotated/ppl 309.45782
+wandb:  analog_rotated/tokens 508
+wandb:     analog_rotated_nll 5.73482
+wandb:                     +8 ...
+wandb: 
+wandb: 🚀 View run full_cpu_quant_10bit_absmax_hadamardD_512 at: https://wandb.ai/ao2844-columbia-university/analog_rotation_dual_loss/runs/frt81hok
+wandb: ⭐️ View project at: https://wandb.ai/ao2844-columbia-university/analog_rotation_dual_loss
+wandb: Synced 4 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20260502_193528-frt81hok/logs
+Evaluated TinyLlama/TinyLlama-1.1B-Chat-v1.0 on wikitext-2:validation (512 loaded tokens)
+hardware=quant_10bit rotation=hadamard_D online_hadamards=True targets=q_proj,k_proj,v_proj,o_proj,up_proj,gate_proj,down_proj
+
+run                         nll          ppl       tokens
+----------------------------------------------------------
+float_prepared         2.202246       9.0453          508
+analog_identity        7.134295    1254.2530          508
+analog_rotated         5.734822     309.4578          508
