@@ -1,0 +1,31 @@
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]
+Loading weights:   7%|▋         | 15/201 [00:00<00:01, 147.74it/s]
+Loading weights:  31%|███▏      | 63/201 [00:00<00:00, 340.35it/s]
+Loading weights:  49%|████▉     | 98/201 [00:00<00:00, 338.63it/s]
+Loading weights:  66%|██████▌   | 132/201 [00:00<00:00, 316.30it/s]
+Loading weights:  86%|████████▌ | 173/201 [00:00<00:00, 337.84it/s]
+Loading weights: 100%|██████████| 201/201 [00:00<00:00, 339.44it/s]
+
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]
+Loading weights:  24%|██▍       | 49/201 [00:00<00:00, 472.89it/s]
+Loading weights:  48%|████▊     | 97/201 [00:00<00:00, 434.11it/s]
+Loading weights:  74%|███████▍  | 149/201 [00:00<00:00, 466.28it/s]
+Loading weights:  98%|█████████▊| 196/201 [00:00<00:00, 466.49it/s]
+Loading weights: 100%|██████████| 201/201 [00:00<00:00, 470.56it/s]
+
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]
+Loading weights:   1%|          | 2/201 [00:00<00:10, 19.49it/s]
+Loading weights:  38%|███▊      | 77/201 [00:00<00:00, 437.62it/s]
+Loading weights:  66%|██████▌   | 132/201 [00:00<00:00, 476.40it/s]
+Loading weights:  93%|█████████▎| 186/201 [00:00<00:00, 493.08it/s]
+Loading weights: 100%|██████████| 201/201 [00:00<00:00, 464.82it/s]
+Evaluated TinyLlama/TinyLlama-1.1B-Chat-v1.0 on wikitext-2:validation (512 loaded tokens), fake 10-bit activations
+targets=q_proj,k_proj,v_proj,o_proj,up_proj,gate_proj,down_proj
+
+run                         nll          ppl       tokens
+----------------------------------------------------------
+float_prepared         2.202254       9.0454          508
+quant_identity         2.206186       9.0810          508
+quant_rotated          2.199663       9.0220          508
