@@ -71,6 +71,29 @@ def setpoint_repulsion_loss(
     return total / len(weights)
 
 
+def simulated_quant_error(
+    weights: Iterable[torch.Tensor],
+    num_bits: int = 4,
+) -> torch.Tensor:
+    """Mean squared quantization error under per-tensor symmetric uniform quantization.
+
+    Uses the straight-through estimator so gradients flow back through W_eff to R.
+    Minimizing this pushes the rotation to reduce outliers and tighten the scale factor.
+    """
+    weights = list(weights)
+    if not weights:
+        raise ValueError("simulated_quant_error received no weights.")
+
+    n_levels = 2 ** (num_bits - 1) - 1
+    total = torch.zeros((), device=weights[0].device, dtype=weights[0].dtype)
+    for w in weights:
+        scale = w.abs().max() / n_levels
+        w_q = (w / scale).round() * scale
+        w_q_ste = w + (w_q - w).detach()
+        total = total + (w - w_q_ste).pow(2).mean()
+    return total / len(weights)
+
+
 def orthogonality_regularizer(rotation: torch.Tensor) -> torch.Tensor:
     """Soft orthogonality prior for ablations that do not use the Stiefel optimizer."""
     identity = torch.eye(rotation.shape[0], device=rotation.device, dtype=rotation.dtype)

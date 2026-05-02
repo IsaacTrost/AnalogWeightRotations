@@ -1,0 +1,58 @@
+wandb: [wandb.login()] Using explicit session credentials for https://api.wandb.ai.
+wandb: Appending key for api.wandb.ai to your netrc file: /root/.netrc
+wandb: Currently logged in as: wisaactrost (ao2844-columbia-university) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.26.1
+wandb: Run data is saved locally in /workspace/wandb/run-20260501_195630-pkw300ft
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run analog_identity_bits=8_ir=0.1_bs=8_had=1
+wandb: ⭐️ View project at https://wandb.ai/ao2844-columbia-university/analog_rotation_dual_loss
+wandb: 🚀 View run at https://wandb.ai/ao2844-columbia-university/analog_rotation_dual_loss/runs/pkw300ft
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/201 [00:00<?, ?it/s]Loading weights: 100%|██████████| 201/201 [00:00<00:00, 8918.39it/s]
+wandb: updating run metadata
+wandb: uploading output.log; uploading wandb-summary.json; uploading config.yaml
+wandb: 
+wandb: Run history:
+wandb:    analog_lm_loss █▁▃▅▅▃▃▆▃▄▂▃▄▆▄▆▆▃▃▆▃▃▃▃▅▄▆▅▅▇▃▆▅▂▄▄▃▄▆▅
+wandb:           r1_dist ▁▁▂▂▂▃▄▄▄▄▅▅▅▆▆▇▇▇▇▇▇▇██████████████████
+wandb:      r1_grad_norm ▇▃▁▄▄▇▅▄▆▆▄▄▂▄▃▂▃▂▃▄▂▂▅▃▅▂▄▅▃▄▆▅█▂▃█▃▁▇▃
+wandb:      r2_dist_mean ▁▁▁▁▂▂▂▂▂▃▃▃▃▃▄▄▄▅▅▅▆▆▆▆▆▆▆▆▆▆▇▇▇▇▇█████
+wandb: r2_grad_norm_mean ▁▃▃▄▅▃▆▁▃▄▃▄▃▁▆▁▂▃▃▄▄▂▅▄▄▂█▄▂▄▄▄▄▆▂▅▃▃▄▃
+wandb:              step ▁▁▁▁▁▂▂▂▂▂▂▂▂▂▃▃▃▄▄▄▄▄▄▄▄▆▆▆▆▆▆▆▇▇▇▇▇▇██
+wandb: 
+wandb: Run summary:
+wandb:    analog_lm_loss 2.6926
+wandb:           r1_dist 3.15241
+wandb:      r1_grad_norm 7.00251
+wandb:      r2_dist_mean 0.20414
+wandb: r2_grad_norm_mean 0.08038
+wandb:              step 199
+wandb: 
+wandb: 🚀 View run analog_identity_bits=8_ir=0.1_bs=8_had=1 at: https://wandb.ai/ao2844-columbia-university/analog_rotation_dual_loss/runs/pkw300ft
+wandb: ⭐️ View project at: https://wandb.ai/ao2844-columbia-university/analog_rotation_dual_loss
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20260501_195630-pkw300ft/logs
+Online Hadamards enabled: R3 (head_dim=64), R4 (block=512, intermediate_size=5632)
+Loaded wikitext-2: 2848655 tokens -> 11127 chunks of length 256
+step    0  analog_lm=2.5654  r1_grad=7.731e+00  |R1-I|=5.317e-02  r2_grad=7.642e-02  |R2-I|=4.486e-03
+step   10  analog_lm=2.5928  r1_grad=7.631e+00  |R1-I|=4.202e-01  r2_grad=8.118e-02  |R2-I|=2.622e-02
+step   20  analog_lm=2.8614  r1_grad=6.282e+00  |R1-I|=7.663e-01  r2_grad=7.691e-02  |R2-I|=4.147e-02
+step   30  analog_lm=2.8403  r1_grad=6.921e+00  |R1-I|=1.154e+00  r2_grad=7.601e-02  |R2-I|=5.789e-02
+step   40  analog_lm=2.6259  r1_grad=6.404e+00  |R1-I|=1.563e+00  r2_grad=7.295e-02  |R2-I|=7.550e-02
+step   50  analog_lm=2.3863  r1_grad=8.974e+00  |R1-I|=1.976e+00  r2_grad=8.890e-02  |R2-I|=9.008e-02
+step   60  analog_lm=2.4748  r1_grad=6.483e+00  |R1-I|=2.360e+00  r2_grad=7.426e-02  |R2-I|=1.040e-01
+step   70  analog_lm=2.6697  r1_grad=6.875e+00  |R1-I|=2.669e+00  r2_grad=8.121e-02  |R2-I|=1.150e-01
+step   80  analog_lm=2.4666  r1_grad=7.941e+00  |R1-I|=2.898e+00  r2_grad=8.317e-02  |R2-I|=1.251e-01
+step   90  analog_lm=2.4602  r1_grad=6.167e+00  |R1-I|=3.057e+00  r2_grad=7.289e-02  |R2-I|=1.332e-01
+step  100  analog_lm=2.7392  r1_grad=6.767e+00  |R1-I|=3.165e+00  r2_grad=7.938e-02  |R2-I|=1.399e-01
+step  110  analog_lm=2.3509  r1_grad=7.082e+00  |R1-I|=3.245e+00  r2_grad=7.537e-02  |R2-I|=1.462e-01
+step  120  analog_lm=2.8618  r1_grad=8.085e+00  |R1-I|=3.296e+00  r2_grad=8.712e-02  |R2-I|=1.524e-01
+step  130  analog_lm=2.9043  r1_grad=7.392e+00  |R1-I|=3.316e+00  r2_grad=8.963e-02  |R2-I|=1.583e-01
+step  140  analog_lm=2.9555  r1_grad=7.907e+00  |R1-I|=3.309e+00  r2_grad=9.208e-02  |R2-I|=1.646e-01
+step  150  analog_lm=2.5834  r1_grad=9.237e+00  |R1-I|=3.268e+00  r2_grad=9.737e-02  |R2-I|=1.722e-01
+step  160  analog_lm=2.5844  r1_grad=7.465e+00  |R1-I|=3.203e+00  r2_grad=8.479e-02  |R2-I|=1.801e-01
+step  170  analog_lm=2.8232  r1_grad=9.066e+00  |R1-I|=3.145e+00  r2_grad=8.061e-02  |R2-I|=1.872e-01
+step  180  analog_lm=2.6037  r1_grad=7.679e+00  |R1-I|=3.111e+00  r2_grad=8.697e-02  |R2-I|=1.937e-01
+step  190  analog_lm=2.7561  r1_grad=6.861e+00  |R1-I|=3.116e+00  r2_grad=7.392e-02  |R2-I|=1.994e-01
+Saved checkpoint to /workspace/checkpoints/analog_trained_from_identity.pt
+final analog_lm_loss=2.6926

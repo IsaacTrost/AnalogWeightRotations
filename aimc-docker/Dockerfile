@@ -24,7 +24,7 @@ RUN conda create -y -n aihwkit -c conda-forge -c pytorch -c nvidia \
     pip && \
     conda clean -afy
 
-RUN conda run -n aihwkit pip install wandb transformers
+RUN conda run -n aihwkit pip install wandb transformers datasets
 
 RUN conda init bash && echo "conda activate aihwkit" >> /root/.bashrc
 

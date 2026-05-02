@@ -34,14 +34,15 @@ def _require_aihwkit():
 
 def build_ideal_analog_config():
     """
-    Ideal-ish AnalogLinear baseline.
+    Perfect AnalogLinear sanity baseline.
 
-    Uses AIHWKit AnalogLinear, but disables the explicit hardware losses we
-    isolate in the other presets.
+    Uses AIHWKit AnalogLinear while bypassing forward nonidealities. This is the
+    preset that should match torch.nn.Linear up to small numerical tolerance.
     """
     aihw = _require_aihwkit()
 
     cfg = aihw["InferenceRPUConfig"]()
+    cfg.forward.is_perfect = True
     cfg.forward.ir_drop = 0.0
     cfg.forward.w_noise = 0.0
     cfg.forward.w_noise_type = aihw["WeightNoiseType"].NONE
@@ -52,6 +53,8 @@ def build_ideal_analog_config():
     cfg.forward.out_bound = -1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
     cfg.forward.noise_management = aihw["NoiseManagementType"].NONE
+    cfg.noise_model = None
+    cfg.drift_compensation = None
     return cfg
     
 

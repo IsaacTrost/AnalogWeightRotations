@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import Dict, Optional
 
 import torch
@@ -139,6 +140,163 @@ def rotate_ov_proj(layer: torch.nn.Module, rotation: torch.Tensor, head_dim: int
     o_proj = layer.self_attn.o_proj
     v_proj.weight.data = _rotate_blockwise_output_weight(v_proj.weight, rotation, head_dim)
     o_proj.weight.data = _rotate_blockwise_input_weight(o_proj.weight, rotation, head_dim)
+
+
+def _identity_rotation(size: int, model: torch.nn.Module) -> torch.Tensor:
+    return torch.eye(
+        size,
+        device=model.model.embed_tokens.weight.device,
+        dtype=ROTATION_COMPUTE_DTYPE,
+    )
+
+
+def identity_rotation_state(model: torch.nn.Module) -> Dict[str, object]:
+    """Build a checkpoint-shaped identity R1/R2 state for a LLaMA-shaped model."""
+    num_heads = model.config.num_attention_heads
+    head_dim = model.config.hidden_size // num_heads
+    layers = {
+        f"model.layers.{layer_idx}.self_attn.R2": _identity_rotation(head_dim, model)
+        for layer_idx in range(len(model.model.layers))
+    }
+    return {
+        "R1": _identity_rotation(model.config.hidden_size, model),
+        "layers": layers,
+        "metadata": {
+            "rotate_mode": "identity",
+            "r2_mode": "identity",
+            "seed": 0,
+            "r2_seed_offset": 0,
+            "hidden_size": model.config.hidden_size,
+            "num_attention_heads": num_heads,
+            "head_dim": head_dim,
+        },
+    }
+
+
+def generated_rotation_state(
+    model: torch.nn.Module,
+    *,
+    rotate_mode: str = "random",
+    r2_mode: Optional[str] = None,
+    seed: int = 0,
+    r2_seed_offset: int = 1,
+) -> Dict[str, object]:
+    """Build a checkpoint-shaped generated R1/R2 state without mutating the model."""
+    device = model.model.embed_tokens.weight.device.type
+    num_heads = model.config.num_attention_heads
+    head_dim = model.config.hidden_size // num_heads
+    resolved_r2_mode = r2_mode or rotate_mode
+    r1 = get_rotation_matrix(
+        model.config.hidden_size,
+        mode=rotate_mode,
+        device=device,
+        dtype=ROTATION_COMPUTE_DTYPE,
+        seed=seed,
+    )
+    layers = {
+        f"model.layers.{layer_idx}.self_attn.R2": get_rotation_matrix(
+            head_dim,
+            mode=resolved_r2_mode,
+            device=device,
+            dtype=ROTATION_COMPUTE_DTYPE,
+            seed=seed + r2_seed_offset + layer_idx,
+        )
+        for layer_idx in range(len(model.model.layers))
+    }
+    return {
+        "R1": r1,
+        "layers": layers,
+        "metadata": {
+            "rotate_mode": rotate_mode,
+            "r2_mode": resolved_r2_mode,
+            "seed": seed,
+            "r2_seed_offset": r2_seed_offset,
+            "hidden_size": model.config.hidden_size,
+            "num_attention_heads": num_heads,
+            "head_dim": head_dim,
+        },
+    }
+
+
+def _coerce_layer_r2_map(
+    model: torch.nn.Module,
+    r2_state: Optional[Mapping[str, torch.Tensor]],
+) -> Dict[int, torch.Tensor]:
+    """Accept both train_full_analog and static-summary R2 checkpoint key formats."""
+    if not r2_state:
+        return {}
+
+    layer_map: Dict[int, torch.Tensor] = {}
+    for key, value in r2_state.items():
+        if key.startswith("layer_"):
+            layer_idx = int(key.split("_", 1)[1])
+        elif ".layers." in key:
+            layer_idx = int(key.split(".layers.", 1)[1].split(".", 1)[0])
+        else:
+            raise ValueError(f"Unrecognized R2 checkpoint key: {key}")
+        layer_map[layer_idx] = value.to(
+            device=model.model.embed_tokens.weight.device,
+            dtype=ROTATION_COMPUTE_DTYPE,
+        )
+    return layer_map
+
+
+@torch.inference_mode()
+def bake_rotation_state_into_model(
+    model: torch.nn.Module,
+    rotation_state: Mapping[str, object],
+) -> Dict[str, object]:
+    """Bake an explicit R1/R2 checkpoint into the model weights in place."""
+    if "R1" not in rotation_state:
+        raise ValueError("Rotation state must contain an R1 tensor.")
+
+    r1 = rotation_state["R1"]
+    if not isinstance(r1, torch.Tensor):
+        raise TypeError("Rotation state R1 must be a torch.Tensor.")
+    r1 = r1.to(device=model.model.embed_tokens.weight.device, dtype=ROTATION_COMPUTE_DTYPE)
+
+    num_heads = model.config.num_attention_heads
+    head_dim = model.config.hidden_size // num_heads
+    r2_source = rotation_state.get("R2", rotation_state.get("layers", {}))
+    if not isinstance(r2_source, Mapping):
+        raise TypeError("Rotation state R2/layers must be a mapping of layer names to tensors.")
+    r2_map = _coerce_layer_r2_map(model, r2_source)
+
+    rotate_embeddings(model, r1)
+    rotate_head(model, r1)
+
+    baked_layers: Dict[str, torch.Tensor] = {}
+    for layer_idx, layer in enumerate(model.model.layers):
+        layer_r2 = r2_map.get(layer_idx)
+        if layer_r2 is None:
+            layer_r2 = _identity_rotation(head_dim, model)
+        if tuple(layer_r2.shape) != (head_dim, head_dim):
+            raise ValueError(
+                f"R2 for layer {layer_idx} has shape {tuple(layer_r2.shape)}, "
+                f"expected {(head_dim, head_dim)}."
+            )
+        rotate_attention_inputs(layer, r1)
+        rotate_attention_output(layer, r1)
+        rotate_mlp_input(layer, r1)
+        rotate_mlp_output(layer, r1)
+        rotate_ov_proj(layer, layer_r2, head_dim)
+        baked_layers[f"model.layers.{layer_idx}.self_attn.R2"] = layer_r2.detach().clone()
+
+    return {
+        "R1": r1.detach().clone(),
+        "layers": baked_layers,
+        "metadata": {
+            "rotate_mode": rotation_state.get("metadata", {}).get("rotate_mode", "checkpoint")
+            if isinstance(rotation_state.get("metadata", {}), Mapping)
+            else "checkpoint",
+            "r2_mode": rotation_state.get("metadata", {}).get("r2_mode", "checkpoint")
+            if isinstance(rotation_state.get("metadata", {}), Mapping)
+            else "checkpoint",
+            "hidden_size": model.config.hidden_size,
+            "num_attention_heads": num_heads,
+            "head_dim": head_dim,
+        },
+    }
 
 
 @torch.inference_mode()
