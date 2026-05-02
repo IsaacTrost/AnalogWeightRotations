@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import pathlib
 import sys
 from dataclasses import dataclass
@@ -26,6 +27,13 @@ from src.llama_model import (
 from src.llama_prepare import prepare_model_for_rotation
 from src.llama_verify import compare_verification_runs, run_verification_forward
 from src.runtime_rotation import enable_runtime_attention_rotations
+from src.wandb_logging import (
+    compact_verification_metrics,
+    flatten_verification_layer_metrics,
+    flatten_rotation_summary,
+    flatten_verification_metrics,
+    init_wandb_run,
+)
 
 
 @dataclass
@@ -48,6 +56,10 @@ class RuntimeRotationTrainingConfig:
     eval_every: int = 0
     prepare_model: bool = True
     save_rotation_path: Optional[str] = None
+    wandb_enabled: bool = False
+    wandb_run_name: Optional[str] = None
+    wandb_group: Optional[str] = None
+    wandb_tags: Sequence[str] = ()
 
 
 def freeze_non_rotation_parameters(model: torch.nn.Module) -> list[str]:
@@ -85,6 +97,48 @@ def _loss_value(outputs, batch: dict[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _rotation_gradient_norm(model: torch.nn.Module) -> float:
+    """Measure the total gradient norm over the trainable runtime rotation matrices."""
+    squared_norm = 0.0
+    for parameter in model.runtime_rotation_parameters.parameters():
+        if parameter.grad is None:
+            continue
+        squared_norm += parameter.grad.detach().float().norm().item() ** 2
+    return squared_norm**0.5
+
+
+def _training_wandb_config(config: RuntimeRotationTrainingConfig) -> dict[str, Any]:
+    """Build a W&B config that captures run knobs without storing raw calibration text."""
+    if config.calibration_texts is not None:
+        calibration_source = "inline"
+        calibration_text_count = len(config.calibration_texts)
+    elif config.calibration_path is not None:
+        calibration_source = "path"
+        calibration_text_count = None
+    else:
+        calibration_source = "default"
+        calibration_text_count = len(DEFAULT_TEXTS)
+
+    return {
+        "model_name": config.model_name,
+        "rotate_mode": config.rotate_mode,
+        "r2_mode": config.r2_mode or config.rotate_mode,
+        "seed": config.seed,
+        "r2_seed_offset": config.r2_seed_offset,
+        "torch_dtype": str(config.torch_dtype),
+        "max_length": config.max_length,
+        "batch_size": config.batch_size,
+        "num_steps": config.num_steps,
+        "learning_rate": config.learning_rate,
+        "momentum": config.momentum,
+        "eval_every": config.eval_every,
+        "prepare_model": config.prepare_model,
+        "calibration_source": calibration_source,
+        "calibration_text_count": calibration_text_count,
+        "save_rotation_path": config.save_rotation_path,
+    }
+
+
 def summarize_loss_history(history: list[dict[str, float]]) -> dict[str, Any]:
     """Condense the step-wise loss trace into a small training-progress summary."""
     if not history:
@@ -119,6 +173,16 @@ def build_cli_results(results: dict[str, Any], include_rotation_state: bool = Fa
     """Keep the CLI output readable while still exposing dense tensors on demand."""
     printable_results = dict(results)
     printable_results["history_summary"] = summarize_loss_history(printable_results["history"])
+    for key in ("initial_equivalence", "final_equivalence"):
+        if key in printable_results:
+            printable_results[key] = compact_verification_metrics(printable_results[key])
+    printable_results["evaluation_history"] = [
+        {
+            **entry,
+            "float_equivalence": compact_verification_metrics(entry["float_equivalence"]),
+        }
+        for entry in printable_results.get("evaluation_history", [])
+    ]
     if not include_rotation_state:
         printable_results.pop("rotation_state", None)
     return printable_results
@@ -130,6 +194,15 @@ def run_runtime_rotation_training(config: RuntimeRotationTrainingConfig) -> dict
         raise ValueError(f"Number of optimization steps must be positive, got {config.num_steps}.")
     if config.eval_every < 0:
         raise ValueError("Evaluation frequency cannot be negative.")
+
+    wandb_run = init_wandb_run(
+        config.wandb_enabled,
+        job_type="runtime-rotation-training",
+        config=_training_wandb_config(config),
+        name=config.wandb_run_name,
+        group=config.wandb_group,
+        tags=config.wandb_tags,
+    )
 
     model, tokenizer = load_model_and_tokenizer(
         model_name=config.model_name,
@@ -192,14 +265,26 @@ def run_runtime_rotation_training(config: RuntimeRotationTrainingConfig) -> dict
         outputs = model(**batch)
         loss = _loss_value(outputs, batch)
         loss.backward()
+        gradient_norm = _rotation_gradient_norm(model)
         optimizer.step()
 
+        loss_value = float(loss.detach().cpu().item())
         history.append(
             {
                 "step": step_idx + 1,
-                "loss": float(loss.detach().cpu().item()),
+                "loss": loss_value,
             }
         )
+
+        if wandb_run is not None:
+            step_metrics = {
+                "train/loss": loss_value,
+                "train/learning_rate": config.learning_rate,
+                "train/rotation_grad_norm": gradient_norm,
+            }
+            if loss_value < 20:
+                step_metrics["train/perplexity"] = math.exp(loss_value)
+            wandb_run.log(step_metrics, step=step_idx + 1)
 
         if config.eval_every and (step_idx + 1) % config.eval_every == 0:
             model.eval()
@@ -209,12 +294,17 @@ def run_runtime_rotation_training(config: RuntimeRotationTrainingConfig) -> dict
                 texts=verification_texts,
                 max_length=config.max_length,
             )
+            float_equivalence = compare_verification_runs(reference_outputs, current_outputs)
             evaluation_history.append(
                 {
                     "step": step_idx + 1,
-                    "float_equivalence": compare_verification_runs(reference_outputs, current_outputs),
+                    "float_equivalence": float_equivalence,
                 }
             )
+            if wandb_run is not None:
+                eval_metrics = flatten_verification_metrics("eval", float_equivalence)
+                eval_metrics.update(flatten_verification_layer_metrics("eval/layers", float_equivalence))
+                wandb_run.log(eval_metrics, step=step_idx + 1)
             model.train()
 
     model.eval()
@@ -243,6 +333,19 @@ def run_runtime_rotation_training(config: RuntimeRotationTrainingConfig) -> dict
         target_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(rotation_state, target_path)
         results["saved_rotation_path"] = str(target_path)
+
+    if wandb_run is not None:
+        final_metrics = {
+            "train/history_best_loss": summarize_loss_history(history)["best_loss"],
+            "train/history_last_loss": summarize_loss_history(history)["last_loss"],
+        }
+        final_metrics.update(flatten_rotation_summary("rotation", results["rotation_summary"]))
+        final_metrics.update(flatten_verification_metrics("initial", results["initial_equivalence"]))
+        final_metrics.update(flatten_verification_layer_metrics("initial/layers", results["initial_equivalence"]))
+        final_metrics.update(flatten_verification_metrics("final", results["final_equivalence"]))
+        final_metrics.update(flatten_verification_layer_metrics("final/layers", results["final_equivalence"]))
+        wandb_run.log(final_metrics)
+        wandb_run.finish()
 
     return results
 
@@ -283,6 +386,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Print the full dense rotation tensors in the final JSON output.",
     )
     parser.add_argument("--save-rotation-path", default=None)
+    parser.add_argument("--wandb", action="store_true", help="Log scalar training metrics to W&B.")
+    parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--wandb-group", default=None)
+    parser.add_argument("--wandb-tags", nargs="*", default=[])
     parser.add_argument(
         "--calibration-path",
         default=None,
@@ -318,6 +425,10 @@ def main() -> None:
             eval_every=args.eval_every,
             prepare_model=not args.skip_prepare,
             save_rotation_path=args.save_rotation_path,
+            wandb_enabled=args.wandb,
+            wandb_run_name=args.wandb_run_name,
+            wandb_group=args.wandb_group,
+            wandb_tags=tuple(args.wandb_tags),
         )
     )
     printable_results = build_cli_results(

@@ -26,6 +26,7 @@ from src.llama_rotation import rotate_model
 from src.llama_verify import compare_verification_runs, run_verification_forward
 from src.rotation_utils import orthogonality_error
 from src.runtime_rotation import enable_runtime_attention_rotations
+from src.wandb_logging import init_wandb_run, log_pipeline_results
 
 
 @dataclass
@@ -45,6 +46,10 @@ class PipelineConfig:
     convert_analog: bool = False
     analog_targets: Sequence[str] = ("down_proj",)
     hardware_preset: str = "ideal_analog"
+    wandb_enabled: bool = False
+    wandb_run_name: Optional[str] = None
+    wandb_group: Optional[str] = None
+    wandb_tags: Sequence[str] = ()
 
 
 def summarize_rotation_state(rotation_state: dict) -> dict:
@@ -73,6 +78,25 @@ def summarize_rotation_state(rotation_state: dict) -> dict:
             "min_orthogonality_error": min(r2_error_values) if r2_error_values else 0.0,
             "max_orthogonality_error": max(r2_error_values) if r2_error_values else 0.0,
         },
+    }
+
+
+def _pipeline_wandb_config(config: PipelineConfig) -> dict[str, object]:
+    """Build a compact W&B config for the float, rotation, and analog verification stages."""
+    return {
+        "model_name": config.model_name,
+        "rotate_mode": config.rotate_mode,
+        "r2_mode": config.r2_mode or config.rotate_mode,
+        "seed": config.seed,
+        "r2_seed_offset": config.r2_seed_offset,
+        "rotation_backend": config.rotation_backend,
+        "max_length": config.max_length,
+        "texts_count": len(config.texts or DEFAULT_TEXTS),
+        "torch_dtype": str(config.torch_dtype),
+        "prepare_model": config.prepare_model,
+        "convert_analog": config.convert_analog,
+        "analog_targets": list(config.analog_targets),
+        "hardware_preset": config.hardware_preset if config.convert_analog else None,
     }
 
 
@@ -176,6 +200,18 @@ def run_pipeline(config: PipelineConfig) -> dict:
             analog_outputs,
         )
 
+    wandb_run = init_wandb_run(
+        config.wandb_enabled,
+        job_type="rotation-pipeline",
+        config=_pipeline_wandb_config(config),
+        name=config.wandb_run_name,
+        group=config.wandb_group,
+        tags=config.wandb_tags,
+    )
+    log_pipeline_results(wandb_run, results)
+    if wandb_run is not None:
+        wandb_run.finish()
+
     return results
 
 
@@ -228,6 +264,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=list(supported_hardware_presets()),
         help="AIHWKit hardware-loss preset to use when --convert-analog is enabled.",
     )
+    parser.add_argument("--wandb", action="store_true", help="Log scalar pipeline metrics to W&B.")
+    parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--wandb-group", default=None)
+    parser.add_argument("--wandb-tags", nargs="*", default=[])
     return parser
 
 
@@ -265,6 +305,10 @@ def main() -> None:
             convert_analog=args.convert_analog,
             analog_targets=tuple(args.analog_targets),
             hardware_preset=args.hardware_preset,
+            wandb_enabled=args.wandb,
+            wandb_run_name=args.wandb_run_name,
+            wandb_group=args.wandb_group,
+            wandb_tags=tuple(args.wandb_tags),
         )
     )
 

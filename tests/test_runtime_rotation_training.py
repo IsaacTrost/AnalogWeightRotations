@@ -245,6 +245,29 @@ class RuntimeRotationTrainingTests(unittest.TestCase):
                     {"step": 2, "loss": 2.5},
                     {"step": 3, "loss": 2.0},
                 ],
+                "initial_equivalence": {
+                    "logits": {"max_abs": 0.0, "mean_abs": 0.0, "rel_l2": 0.0},
+                    "next_token_match": True,
+                    "hidden_states": [{"layer_index": 0, "rel_l2": 0.0}],
+                    "module_outputs": {"lm_head": {"rel_l2": 0.0}},
+                },
+                "final_equivalence": {
+                    "logits": {"max_abs": 0.1, "mean_abs": 0.01, "rel_l2": 0.001},
+                    "next_token_match": True,
+                    "hidden_states": [{"layer_index": 0, "rel_l2": 0.001}],
+                    "module_outputs": {"lm_head": {"rel_l2": 0.001}},
+                },
+                "evaluation_history": [
+                    {
+                        "step": 1,
+                        "float_equivalence": {
+                            "logits": {"max_abs": 0.2, "mean_abs": 0.02, "rel_l2": 0.002},
+                            "next_token_match": True,
+                            "hidden_states": [{"layer_index": 0, "rel_l2": 0.002}],
+                            "module_outputs": {"lm_head": {"rel_l2": 0.002}},
+                        },
+                    }
+                ],
                 "rotation_state": {"R1": torch.eye(2)},
                 "rotation_summary": {"R1": {"orthogonality_error": 0.0}},
             }
@@ -254,6 +277,8 @@ class RuntimeRotationTrainingTests(unittest.TestCase):
         self.assertEqual(cli_results["history_summary"]["num_steps"], 3)
         self.assertEqual(cli_results["history_summary"]["best_loss"], 2.0)
         self.assertTrue(cli_results["history_summary"]["monotonic_nonincreasing"])
+        self.assertNotIn("hidden_states", cli_results["final_equivalence"])
+        self.assertNotIn("module_outputs", cli_results["evaluation_history"][0]["float_equivalence"])
 
     @patch("src.train_runtime_rotation.load_model_and_tokenizer")
     def test_runtime_rotation_training_runs_and_saves_checkpoint(self, mock_loader) -> None:
