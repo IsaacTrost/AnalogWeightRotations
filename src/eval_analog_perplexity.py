@@ -211,6 +211,13 @@ def _build_analog_model(
 
 def run_evaluation(config: AnalogPerplexityConfig) -> dict:
     """Evaluate requested float and analog baselines with shared dataset settings."""
+    # Set rotation_mode to 'learned' if a checkpoint is provided and not using identity
+    rotation_mode = (
+        "identity" if config.identity_r1_r2 else ("learned" if config.checkpoint_path else config.rotation_mode)
+    )
+    r2_mode = (
+        "identity" if config.identity_r1_r2 else config.r2_mode or config.rotation_mode
+    )
     results = {
         "model_name": config.model_name,
         "dataset": config.dataset,
@@ -221,8 +228,8 @@ def run_evaluation(config: AnalogPerplexityConfig) -> dict:
         "hardware_preset": config.hardware_preset,
         "analog_targets": list(config.analog_targets),
         "online_hadamards": config.online_hadamards,
-        "rotation_mode": "identity" if config.identity_r1_r2 else config.rotation_mode,
-        "r2_mode": "identity" if config.identity_r1_r2 else config.r2_mode or config.rotation_mode,
+        "rotation_mode": rotation_mode,
+        "r2_mode": r2_mode,
         "seed": config.seed,
         "r2_seed_offset": config.r2_seed_offset,
         "runs": {},
@@ -263,7 +270,7 @@ def run_evaluation(config: AnalogPerplexityConfig) -> dict:
         )
         run = evaluate_perplexity(model, get_batches(tokenizer, device))
         run["converted_layers"] = converted
-        run["rotation_mode"] = rotation_state["metadata"]["rotate_mode"]
+        run["rotation_mode"] = "identity"
         results["runs"]["analog_identity"] = run
         del model
         if torch.cuda.is_available():
@@ -277,7 +284,9 @@ def run_evaluation(config: AnalogPerplexityConfig) -> dict:
         )
         run = evaluate_perplexity(model, get_batches(tokenizer, device))
         run["converted_layers"] = converted
-        run["rotation_mode"] = rotation_state["metadata"]["rotate_mode"]
+        run["rotation_mode"] = (
+            "learned" if config.checkpoint_path and not config.identity_r1_r2 else rotation_state["metadata"].get("rotate_mode", "checkpoint")
+        )
         run["checkpoint_path"] = None if config.identity_r1_r2 else config.checkpoint_path
         results["runs"]["analog_rotated"] = run
         del model
@@ -322,7 +331,7 @@ def _log_wandb(results: dict, run_name: Optional[str] = None) -> None:
         name=run_name
         or (
             f"eval_{results['hardware_preset']}_"
-            f"{results['rotation_mode']}_tok={results.get('loaded_tokens', 0)}"
+            f"{'learned' if results.get('rotation_mode') == 'learned' else results['rotation_mode']}_tok={results.get('loaded_tokens', 0)}"
         ),
         config=config,
         job_type="analog_perplexity_eval",
