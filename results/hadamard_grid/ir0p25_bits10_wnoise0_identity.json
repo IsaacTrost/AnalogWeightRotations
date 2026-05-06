@@ -13,7 +13,8 @@
     "o_proj",
     "up_proj",
     "gate_proj",
-    "down_proj"
+    "down_proj",
+    "lm_head"
   ],
   "online_hadamards": false,
   "page_analog_tiles": false,
@@ -26,8 +27,8 @@
   "r2_seed_offset": 1,
   "runs": {
     "analog_identity": {
-      "nll": 2.670423023402691,
-      "ppl": 14.446078929895348,
+      "nll": 2.67016445659101,
+      "ppl": 14.442344136192816,
       "tokens": 8128,
       "converted_layers": [
         "model.layers.0.self_attn.q_proj",
@@ -183,7 +184,8 @@
         "model.layers.21.self_attn.o_proj",
         "model.layers.21.mlp.gate_proj",
         "model.layers.21.mlp.up_proj",
-        "model.layers.21.mlp.down_proj"
+        "model.layers.21.mlp.down_proj",
+        "lm_head"
       ],
       "rotation_mode": "identity"
     }
@@ -192,6 +194,8 @@
   "grid": {
     "run_kind": "identity",
     "seed": null,
+    "checkpoint_path": null,
+    "checkpoint_label": null,
     "ir_drop": 0.25,
     "input_bits": 10,
     "input_resolution": 1022.0,
