@@ -13,7 +13,8 @@
     "o_proj",
     "up_proj",
     "gate_proj",
-    "down_proj"
+    "down_proj",
+    "lm_head"
   ],
   "online_hadamards": true,
   "page_analog_tiles": false,
@@ -26,8 +27,8 @@
   "r2_seed_offset": 1,
   "runs": {
     "analog_rotated": {
-      "nll": 2.6670556850731373,
-      "ppl": 14.397515904559134,
+      "nll": 2.6657001860439777,
+      "ppl": 14.378013306590637,
       "tokens": 8128,
       "converted_layers": [
         "model.layers.0.self_attn.q_proj",
@@ -183,7 +184,8 @@
         "model.layers.21.self_attn.o_proj",
         "model.layers.21.mlp.gate_proj",
         "model.layers.21.mlp.up_proj",
-        "model.layers.21.mlp.down_proj"
+        "model.layers.21.mlp.down_proj",
+        "lm_head"
       ],
       "rotation_mode": "hadamard_D",
       "checkpoint_path": null
@@ -193,6 +195,8 @@
   "grid": {
     "run_kind": "hadamard_D",
     "seed": 1,
+    "checkpoint_path": null,
+    "checkpoint_label": null,
     "ir_drop": 0.25,
     "input_bits": 10,
     "input_resolution": 1022.0,
