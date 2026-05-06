@@ -114,17 +114,21 @@ class PagedAnalogModuleWrapper(torch.nn.Module):
         self,
         analog_module: torch.nn.Module,
         *,
+        module_name: str = "analog_module",
         storage_device: str = "cpu",
         execution_device: Optional[str] = None,
         compute_dtype: torch.dtype = torch.float32,
         clear_cuda_cache: bool = False,
+        log_cuda_memory: bool = False,
     ) -> None:
         super().__init__()
         self.analog_module = analog_module
+        self.module_name = module_name
         self.storage_device = torch.device(storage_device)
         self.execution_device = torch.device(execution_device) if execution_device else None
         self.compute_dtype = compute_dtype
         self.clear_cuda_cache = clear_cuda_cache
+        self.log_cuda_memory = log_cuda_memory
         self.in_features = analog_module.in_features
         self.out_features = analog_module.out_features
         self.analog_module.to(self.storage_device)
@@ -140,20 +144,42 @@ class PagedAnalogModuleWrapper(torch.nn.Module):
     def named_analog_layers(self, *args, **kwargs):
         return self.analog_module.named_analog_layers(*args, **kwargs)
 
+    def _log_cuda_memory(self, label: str, device: torch.device) -> None:
+        if not self.log_cuda_memory or device.type != "cuda":
+            return
+        allocated = torch.cuda.memory_allocated(device) / 1024**2
+        reserved = torch.cuda.memory_reserved(device) / 1024**2
+        max_allocated = torch.cuda.max_memory_allocated(device) / 1024**2
+        free, total = torch.cuda.mem_get_info(device)
+        print(
+            f"[cuda_mem:{self.module_name}:{label}] "
+            f"allocated={allocated:.1f}MiB reserved={reserved:.1f}MiB "
+            f"max_allocated={max_allocated:.1f}MiB "
+            f"driver_free={free / 1024**2:.1f}MiB driver_total={total / 1024**2:.1f}MiB",
+            flush=True,
+        )
+
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         original_device = inputs.device
         execution_device = self.execution_device or inputs.device
-        self.analog_module.to(device=execution_device, dtype=self.compute_dtype)
+        self._log_cuda_memory("before_to_execution", execution_device)
+        with torch.profiler.record_function(f"analog_page:{self.module_name}:to_execution"):
+            self.analog_module.to(device=execution_device, dtype=self.compute_dtype)
+        self._log_cuda_memory("after_to_execution", execution_device)
         try:
-            outputs = self.analog_module(
-                inputs.to(device=execution_device, dtype=self.compute_dtype)
-            )
+            with torch.profiler.record_function(f"analog_page:{self.module_name}:forward"):
+                outputs = self.analog_module(
+                    inputs.to(device=execution_device, dtype=self.compute_dtype)
+                )
             if _is_cuda_device(execution_device):
                 torch.cuda.synchronize(execution_device)
         finally:
-            self.analog_module.to(self.storage_device)
+            self._log_cuda_memory("before_to_storage", execution_device)
+            with torch.profiler.record_function(f"analog_page:{self.module_name}:to_storage"):
+                self.analog_module.to(self.storage_device)
             if _is_cuda_device(execution_device) and self.clear_cuda_cache:
                 torch.cuda.empty_cache()
+            self._log_cuda_memory("after_to_storage", execution_device)
         return outputs.to(device=original_device, dtype=inputs.dtype)
 
 
@@ -247,6 +273,7 @@ def convert_llama_linears_to_analog(
     analog_execution_device: Optional[str] = None,
     cpu_paged_analog_targets: Sequence[str] = (),
     clear_paged_cuda_cache: bool = False,
+    log_paged_cuda_memory: bool = False,
 ) -> List[str]:
     """
     Replace selected LLaMA linear projections with AnalogLinear modules in place.
@@ -310,10 +337,12 @@ def convert_llama_linears_to_analog(
             )
             analog = PagedAnalogModuleWrapper(
                 analog,
+                module_name=module_name,
                 storage_device=analog_storage_device,
                 execution_device=paged_execution_device,
                 compute_dtype=torch.float32,
                 clear_cuda_cache=clear_paged_cuda_cache,
+                log_cuda_memory=log_paged_cuda_memory,
             )
 
         analog = AnalogLinearSequenceWrapper(analog)
@@ -336,6 +365,7 @@ def prepare_analog_model(
     analog_execution_device: Optional[str] = None,
     cpu_paged_analog_targets: Sequence[str] = (),
     clear_paged_cuda_cache: bool = False,
+    log_paged_cuda_memory: bool = False,
 ) -> List[str]:
     """
     Public model-level analog preparation API.
@@ -353,4 +383,5 @@ def prepare_analog_model(
         analog_execution_device=analog_execution_device,
         cpu_paged_analog_targets=cpu_paged_analog_targets,
         clear_paged_cuda_cache=clear_paged_cuda_cache,
+        log_paged_cuda_memory=log_paged_cuda_memory,
     )

@@ -17,7 +17,7 @@ from typing import Optional, Sequence
 import torch
 
 from src.analog_llama import prepare_analog_model
-from src.hardware_configs import supported_hardware_presets
+from src.hardware_configs import build_rpu_config, supported_hardware_presets
 from src.llama_model import (
     DEFAULT_MODEL_NAME,
     TORCH_DTYPE_CHOICES,
@@ -64,6 +64,8 @@ class AnalogPerplexityConfig:
     batch_size: int = 1
     max_eval_tokens: Optional[int] = 8192
     hardware_preset: str = "ideal_analog"
+    rpu_config: Optional[object] = None
+    rpu_overrides: Optional[dict] = None
     analog_targets: Sequence[str] = DEFAULT_ANALOG_TARGETS
     online_hadamards: bool = False
     page_analog_tiles: bool = False
@@ -227,10 +229,17 @@ def _build_analog_model(
     model, tokenizer, device = _load_prepared_model(config)
     state = identity_rotation_state(model) if force_identity else _load_rotation_state(config, model)
     rotation_state = bake_rotation_state_into_model(model, state)
+    rpu_config = config.rpu_config
+    if rpu_config is None and config.rpu_overrides:
+        rpu_config = build_rpu_config(
+            config.hardware_preset,
+            overrides=config.rpu_overrides,
+        )
     converted = prepare_analog_model(
         model,
         target_suffixes=config.analog_targets,
         hardware_preset=config.hardware_preset,
+        rpu_config=rpu_config,
         online_hadamards=online_hadamards,
         page_analog_tiles=config.page_analog_tiles,
         analog_storage_device=config.analog_storage_device,
@@ -361,9 +370,9 @@ def _print_results(results: dict) -> None:
     for name, metrics in results["runs"].items():
         print(
             f"{name:<18} "
-            f"{metrics['nll']:12.6f} "
-            f"{metrics['ppl']:12.4f} "
-            f"{metrics['tokens']:12d}"
+            f"{metrics.get('nll', float('nan')):12.6f} "
+            f"{metrics.get('ppl', float('nan')):12.4f} "
+            f"{metrics.get('tokens', 0):12d}"
         )
 
 
