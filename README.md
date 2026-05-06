@@ -46,7 +46,7 @@ export HF_HOME=/var/cache/huggingface
 Add this to `/etc/environment` to apply system-wide for all users.
 
 `
-$ conda run -n aihwkit python -m src.baseline_forward
+$ conda run -n aihwkit python -m src.legacy.baseline_forward
 `
 
 ## Jupyter
@@ -58,7 +58,7 @@ $ conda run -n aihwkit jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --
 
 # Overview
 `
-src/baseline_forward.py
+src/legacy/baseline_forward.py
 `
 
 Loads a Hugging Face model (currently GPT-2)
@@ -68,7 +68,7 @@ Logs basic metrics to W&B
 Purpose: establish a reference point before applying rotations
 
 `
-src/baseline_forward.py
+src/legacy/baseline_forward.py
 `
 
 Loads a Hugging Face model (currently GPT-2)
@@ -89,7 +89,7 @@ helper functions (orthonormal checks, etc.)
 Purpose: define and apply rotation matrices
 
 `
-src/apply_rotation.py
+src/legacy/apply_rotation.py
 `
 
 Runs baseline forward pass
