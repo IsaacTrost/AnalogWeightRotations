@@ -441,8 +441,9 @@ def train_full_analog(config: TrainFullAnalogConfig) -> dict:
     )
 
     history = []
-
+    prof_obj = None
     with _build_profiler(config) as prof:
+        prof_obj = prof
         for step in range(config.num_steps):
             input_ids, labels, attn_mask = next(batches)
 
@@ -492,6 +493,14 @@ def train_full_analog(config: TrainFullAnalogConfig) -> dict:
 
             if prof is not None:
                 prof.step()
+
+    if config.profile and prof_obj is not None:
+        print(
+            prof_obj.key_averages().table(
+                sort_by="cuda_time_total" if torch.cuda.is_available() else "cpu_time_total",
+                row_limit=30,
+            )
+        )
 
     if config.use_wandb:
         wandb.finish()
