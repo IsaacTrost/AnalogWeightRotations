@@ -31,6 +31,10 @@ def _get_submodule(root: torch.nn.Module, module_name: str) -> torch.nn.Module:
     return module
 
 
+def _is_cuda_device(device: torch.device) -> bool:
+    return device.type == "cuda"
+
+
 def apply_block_hadamard(x: torch.Tensor, hadamard_block: torch.Tensor) -> torch.Tensor:
     """Apply a block-diagonal Hadamard transform to the last dimension."""
     block_size = hadamard_block.shape[0]
@@ -103,6 +107,56 @@ class AnalogLinearSequenceWrapper(torch.nn.Module):
         return flat_outputs.reshape(*leading_shape, flat_outputs.shape[-1])
 
 
+class PagedAnalogModuleWrapper(torch.nn.Module):
+    """Keep an analog module on CPU and move it to the input device for forward."""
+
+    def __init__(
+        self,
+        analog_module: torch.nn.Module,
+        *,
+        storage_device: str = "cpu",
+        execution_device: Optional[str] = None,
+        compute_dtype: torch.dtype = torch.float32,
+        clear_cuda_cache: bool = False,
+    ) -> None:
+        super().__init__()
+        self.analog_module = analog_module
+        self.storage_device = torch.device(storage_device)
+        self.execution_device = torch.device(execution_device) if execution_device else None
+        self.compute_dtype = compute_dtype
+        self.clear_cuda_cache = clear_cuda_cache
+        self.in_features = analog_module.in_features
+        self.out_features = analog_module.out_features
+        self.analog_module.to(self.storage_device)
+
+    @property
+    def weight(self):
+        return getattr(self.analog_module, "weight", None)
+
+    @property
+    def bias(self):
+        return getattr(self.analog_module, "bias", None)
+
+    def named_analog_layers(self, *args, **kwargs):
+        return self.analog_module.named_analog_layers(*args, **kwargs)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        original_device = inputs.device
+        execution_device = self.execution_device or inputs.device
+        self.analog_module.to(device=execution_device, dtype=self.compute_dtype)
+        try:
+            outputs = self.analog_module(
+                inputs.to(device=execution_device, dtype=self.compute_dtype)
+            )
+            if _is_cuda_device(execution_device):
+                torch.cuda.synchronize(execution_device)
+        finally:
+            self.analog_module.to(self.storage_device)
+            if _is_cuda_device(execution_device) and self.clear_cuda_cache:
+                torch.cuda.empty_cache()
+        return outputs.to(device=original_device, dtype=inputs.dtype)
+
+
 def _rotate_linear_input_with_hadamard(
     linear: torch.nn.Linear,
     hadamard_block: torch.Tensor,
@@ -113,12 +167,16 @@ def _rotate_linear_input_with_hadamard(
         linear.weight.data.to(dtype=ROTATION_COMPUTE_DTYPE),
         hadamard_block.to(device=linear.weight.device, dtype=ROTATION_COMPUTE_DTYPE),
     )
+
     linear.weight.data = rotated.to(dtype=weight_dtype)
 
 
 def _copy_linear_to_analog(
     linear: torch.nn.Linear,
     rpu_config,
+    *,
+    device: Optional[str] = None,
+    dtype: Optional[torch.dtype] = None,
 ) -> torch.nn.Module:
     """Mirror a float linear layer into an AnalogLinear module with the same parameters."""
     AnalogLinear, _ = _require_aihwkit()
@@ -136,7 +194,9 @@ def _copy_linear_to_analog(
     else:
         analog.set_weights(weight, bias)
 
-    analog.to(device=linear.weight.device, dtype=linear.weight.dtype)
+    target_device = device if device is not None else linear.weight.device
+    target_dtype = dtype if dtype is not None else linear.weight.dtype
+    analog.to(device=target_device, dtype=target_dtype)
     analog.eval()
     return analog
 
@@ -146,6 +206,7 @@ def linear_to_analog(
     *,
     hardware_preset: str = "ideal_analog",
     rpu_config=None,
+    analog_device: Optional[str] = None,
 ) -> torch.nn.Module:
     """
     Convert one torch.nn.Linear into an AIHWKit AnalogLinear.
@@ -153,7 +214,7 @@ def linear_to_analog(
     Either pass an explicit rpu_config or choose one by hardware_preset.
     """
     config = rpu_config if rpu_config is not None else build_rpu_config(hardware_preset)
-    analog = _copy_linear_to_analog(linear, copy.deepcopy(config))
+    analog = _copy_linear_to_analog(linear, copy.deepcopy(config), device=analog_device)
 
     if requires_program_analog_weights(hardware_preset):
         analog.program_analog_weights()
@@ -181,6 +242,11 @@ def convert_llama_linears_to_analog(
     hardware_preset: str = "ideal_analog",
     rpu_config=None,
     online_hadamards: bool = False,
+    page_analog_tiles: bool = False,
+    analog_storage_device: str = "cpu",
+    analog_execution_device: Optional[str] = None,
+    cpu_paged_analog_targets: Sequence[str] = (),
+    clear_paged_cuda_cache: bool = False,
 ) -> List[str]:
     """
     Replace selected LLaMA linear projections with AnalogLinear modules in place.
@@ -189,6 +255,7 @@ def convert_llama_linears_to_analog(
     Otherwise, hardware_preset is resolved through src.hardware_configs.
     """
     suffixes = tuple(target_suffixes or ("down_proj",))
+    cpu_paged_suffixes = tuple(cpu_paged_analog_targets)
     base_config = rpu_config if rpu_config is not None else build_rpu_config(hardware_preset)
     converted = []
     head_dim = model.config.hidden_size // model.config.num_attention_heads
@@ -219,17 +286,35 @@ def convert_llama_linears_to_analog(
         if online_hadamard is not None:
             _rotate_linear_input_with_hadamard(linear, online_hadamard)
 
-        analog = _copy_linear_to_analog(linear, copy.deepcopy(base_config))
+        analog_device = analog_storage_device if page_analog_tiles else None
+        analog = _copy_linear_to_analog(
+            linear,
+            copy.deepcopy(base_config),
+            device=analog_device,
+            dtype=torch.float32 if page_analog_tiles else None,
+        )
 
         if requires_program_analog_weights(hardware_preset):
             analog.program_analog_weights()
 
         if online_hadamard is not None:
             online_hadamard = online_hadamard.to(
-                device=linear.weight.device,
+                device=analog_storage_device if page_analog_tiles else linear.weight.device,
                 dtype=linear.weight.dtype,
             )
             analog = AnalogOnlineHadamardLinear(analog, online_hadamard)
+
+        if page_analog_tiles:
+            paged_execution_device = (
+                "cpu" if leaf_name in cpu_paged_suffixes else analog_execution_device
+            )
+            analog = PagedAnalogModuleWrapper(
+                analog,
+                storage_device=analog_storage_device,
+                execution_device=paged_execution_device,
+                compute_dtype=torch.float32,
+                clear_cuda_cache=clear_paged_cuda_cache,
+            )
 
         analog = AnalogLinearSequenceWrapper(analog)
 
@@ -246,6 +331,11 @@ def prepare_analog_model(
     hardware_preset: str = "ideal_analog",
     rpu_config=None,
     online_hadamards: bool = False,
+    page_analog_tiles: bool = False,
+    analog_storage_device: str = "cpu",
+    analog_execution_device: Optional[str] = None,
+    cpu_paged_analog_targets: Sequence[str] = (),
+    clear_paged_cuda_cache: bool = False,
 ) -> List[str]:
     """
     Public model-level analog preparation API.
@@ -258,4 +348,9 @@ def prepare_analog_model(
         hardware_preset=hardware_preset,
         rpu_config=rpu_config,
         online_hadamards=online_hadamards,
+        page_analog_tiles=page_analog_tiles,
+        analog_storage_device=analog_storage_device,
+        analog_execution_device=analog_execution_device,
+        cpu_paged_analog_targets=cpu_paged_analog_targets,
+        clear_paged_cuda_cache=clear_paged_cuda_cache,
     )
