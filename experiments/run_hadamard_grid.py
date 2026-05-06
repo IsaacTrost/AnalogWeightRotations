@@ -25,7 +25,7 @@ from src.hardware_configs import build_rpu_config
 from src.llama_model import DEFAULT_MODEL_NAME, TORCH_DTYPE_CHOICES, resolve_torch_dtype
 
 
-DEFAULT_GRID_TARGETS = DEFAULT_ANALOG_TARGETS[:-1]
+DEFAULT_GRID_TARGETS = DEFAULT_ANALOG_TARGETS
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,13 @@ class GridPoint:
     ir_drop: float
     input_bits: int
     weight_noise: float
+
+
+@dataclass(frozen=True)
+class CheckpointSpec:
+    index: int
+    path: Path
+    label: str
 
 
 def parse_int_list(text: str) -> list[int]:
@@ -50,6 +57,11 @@ def input_bits_to_resolution(bits: int) -> float:
 def format_value(value: object) -> str:
     text = f"{value:g}" if isinstance(value, float) else str(value)
     return text.replace("-", "m").replace(".", "p")
+
+
+def safe_label(text: str) -> str:
+    label = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in text)
+    return label.strip("_") or "checkpoint"
 
 
 def build_grid_rpu_config(point: GridPoint):
@@ -103,9 +115,18 @@ def run_one(
     seed: Optional[int],
     run_kind: str,
     include_float: bool,
+    checkpoint: Optional[CheckpointSpec] = None,
 ) -> tuple[dict, Path]:
     is_identity = run_kind == "identity"
-    run_name = "identity" if is_identity else f"seed{seed}"
+    is_checkpoint = run_kind == "checkpoint"
+    if is_identity:
+        run_name = "identity"
+    elif is_checkpoint:
+        if checkpoint is None:
+            raise ValueError("checkpoint run_kind requires a checkpoint spec.")
+        run_name = checkpoint.label
+    else:
+        run_name = f"seed{seed}"
     raw_path = args.output_dir / f"{point_name(point)}_{run_name}.json"
     if args.skip_existing and raw_path.exists():
         with raw_path.open("r", encoding="utf-8") as f:
@@ -115,8 +136,9 @@ def run_one(
         model_name=args.model_name,
         torch_dtype=resolve_torch_dtype(args.torch_dtype),
         device=None if args.device in (None, "auto") else args.device,
-        rotation_mode="identity" if is_identity else "hadamard_D",
-        r2_mode="identity" if is_identity else "hadamard_D",
+        checkpoint_path=str(checkpoint.path) if checkpoint is not None else None,
+        rotation_mode="identity" if is_identity else ("learned" if is_checkpoint else "hadamard_D"),
+        r2_mode="identity" if is_identity else ("learned" if is_checkpoint else "hadamard_D"),
         seed=0 if seed is None else seed,
         r2_seed_offset=args.r2_seed_offset,
         dataset=args.dataset,
@@ -143,6 +165,8 @@ def run_one(
     results["grid"] = {
         "run_kind": run_kind,
         "seed": seed,
+        "checkpoint_path": str(checkpoint.path) if checkpoint is not None else None,
+        "checkpoint_label": checkpoint.label if checkpoint is not None else None,
         "ir_drop": point.ir_drop,
         "input_bits": point.input_bits,
         "input_resolution": input_bits_to_resolution(point.input_bits),
@@ -162,6 +186,7 @@ def build_rows(
     identity_results: dict,
     identity_path: Path,
     rotated_results: Iterable[tuple[int, dict, Path]],
+    checkpoint_results: Iterable[tuple[CheckpointSpec, dict, Path]],
     float_results: Optional[dict],
 ) -> list[dict]:
     rows = []
@@ -181,6 +206,8 @@ def build_rows(
             "input_bits": point.input_bits,
             "weight_noise": point.weight_noise,
             "run_key": "analog_identity",
+            "checkpoint_path": "",
+            "checkpoint_label": "",
             "nll": identity_nll,
             "ppl": identity_ppl,
             "tokens": int(metric_or_nan(identity_results, "analog_identity", "tokens")),
@@ -206,6 +233,8 @@ def build_rows(
                 "input_bits": point.input_bits,
                 "weight_noise": point.weight_noise,
                 "run_key": "analog_rotated",
+                "checkpoint_path": "",
+                "checkpoint_label": "",
                 "nll": metric_or_nan(results, "analog_rotated", "nll"),
                 "ppl": rotated_ppl,
                 "tokens": int(metric_or_nan(results, "analog_rotated", "tokens")),
@@ -215,7 +244,33 @@ def build_rows(
                 "improvement_ratio": improvement,
                 "hardware_preset": "ir_drop_only+grid_overrides",
                 "analog_targets": ",".join(results.get("analog_targets", [])),
-                "online_hadamards": results.get("online_hadamards", False),
+                "online_hadamards": results.get("online_hadamards", True),
+                "json_path": str(path),
+            }
+        )
+    for checkpoint, results, path in checkpoint_results:
+        learned_ppl = metric_or_nan(results, "analog_rotated", "ppl")
+        improvement = identity_ppl / learned_ppl if learned_ppl > 0 else math.nan
+        rows.append(
+            {
+                "run_kind": "checkpoint",
+                "seed": "",
+                "ir_drop": point.ir_drop,
+                "input_bits": point.input_bits,
+                "weight_noise": point.weight_noise,
+                "run_key": "analog_rotated",
+                "checkpoint_path": str(checkpoint.path),
+                "checkpoint_label": checkpoint.label,
+                "nll": metric_or_nan(results, "analog_rotated", "nll"),
+                "ppl": learned_ppl,
+                "tokens": int(metric_or_nan(results, "analog_rotated", "tokens")),
+                "float_ppl": float_ppl,
+                "identity_ppl": identity_ppl,
+                "rotated_ppl": learned_ppl,
+                "improvement_ratio": improvement,
+                "hardware_preset": "ir_drop_only+grid_overrides",
+                "analog_targets": ",".join(results.get("analog_targets", [])),
+                "online_hadamards": results.get("online_hadamards", True),
                 "json_path": str(path),
             }
         )
@@ -250,6 +305,13 @@ def iter_grid(args) -> list[GridPoint]:
     return points
 
 
+def build_checkpoint_specs(paths: Sequence[Path]) -> list[CheckpointSpec]:
+    return [
+        CheckpointSpec(index=index, path=path, label=f"ckpt{index}_{safe_label(path.stem)}")
+        for index, path in enumerate(paths)
+    ]
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Grid search Hadamard-D seeds over analog hardware levels.")
     parser.add_argument("--output-dir", type=Path, default=Path("results/hadamard_grid"))
@@ -262,6 +324,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--max-eval-tokens", type=int, default=8192)
     parser.add_argument("--seeds", default="0,1,2,3,4")
+    parser.add_argument(
+        "--checkpoints",
+        nargs="*",
+        type=Path,
+        default=[],
+        help="Optional learned rotation checkpoints to evaluate at each hardware grid point.",
+    )
     parser.add_argument("--ir-drop-values", type=parse_float_list, default=parse_float_list("0,0.1,0.25,0.5,1.0"))
     parser.add_argument("--input-bits-values", type=parse_int_list, default=parse_int_list("-1,10,8,6"))
     parser.add_argument("--weight-noise-values", type=parse_float_list, default=parse_float_list("0,0.005,0.01,0.02"))
@@ -282,6 +351,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_arg_parser().parse_args()
     args.seeds = parse_int_list(args.seeds)
+    args.checkpoints = build_checkpoint_specs(args.checkpoints)
     args.online_hadamards = not args.no_online_hadamards
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -289,7 +359,7 @@ def main() -> None:
     float_results = None
     first_run = True
     points = iter_grid(args)
-    total_runs = len(points) * (1 + len(args.seeds))
+    total_runs = len(points) * (1 + len(args.seeds) + len(args.checkpoints))
     run_idx = 0
 
     for point in points:
@@ -319,12 +389,30 @@ def main() -> None:
             )
             rotated.append((seed, rotated_results, rotated_path))
 
+        checkpoint_runs = []
+        for checkpoint in args.checkpoints:
+            run_idx += 1
+            print(
+                f"[{run_idx}/{total_runs}] checkpoint {checkpoint.path} {point_name(point)}",
+                flush=True,
+            )
+            checkpoint_results, checkpoint_path = run_one(
+                args=args,
+                point=point,
+                seed=None,
+                run_kind="checkpoint",
+                include_float=False,
+                checkpoint=checkpoint,
+            )
+            checkpoint_runs.append((checkpoint, checkpoint_results, checkpoint_path))
+
         rows.extend(
             build_rows(
                 point=point,
                 identity_results=identity_results,
                 identity_path=identity_path,
                 rotated_results=rotated,
+                checkpoint_results=checkpoint_runs,
                 float_results=float_results,
             )
         )

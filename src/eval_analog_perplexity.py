@@ -11,7 +11,7 @@ import argparse
 import json
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Optional, Sequence
 
 import torch
@@ -79,6 +79,44 @@ class AnalogPerplexityConfig:
     use_wandb: bool = False
     wandb_name: Optional[str] = None
     progress_every: int = 1
+    json_output_path: Optional[str] = None
+
+
+def _load_json_config(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        raw_config = json.load(f)
+    if not isinstance(raw_config, dict):
+        raise TypeError(f"Config file {path} must contain a JSON object.")
+
+    aliases = {
+        "checkpoint": "checkpoint_path",
+        "json_output": "json_output_path",
+    }
+    inverted_aliases = {
+        "skip_float_prepared": "run_float_prepared",
+        "skip_analog_identity": "run_analog_identity",
+        "skip_analog_rotated": "run_analog_rotated",
+    }
+    field_names = {field.name for field in fields(AnalogPerplexityConfig)}
+    config = {}
+    for raw_key, value in raw_config.items():
+        normalized_key = raw_key.replace("-", "_")
+        if normalized_key in inverted_aliases:
+            key = inverted_aliases[normalized_key]
+            value = not value
+        else:
+            key = aliases.get(normalized_key, normalized_key)
+        if key not in field_names:
+            valid = ", ".join(sorted(field_names | set(aliases) | set(inverted_aliases)))
+            raise ValueError(f"Unknown config key {raw_key!r} in {path}. Valid keys: {valid}")
+        config[key] = value
+
+    if "torch_dtype" in config:
+        config["torch_dtype"] = resolve_torch_dtype(config["torch_dtype"])
+    if config.get("device") == "auto":
+        config["device"] = None
+
+    return config
 
 
 def _load_dataset_text(dataset: str, split: str) -> str:
@@ -413,6 +451,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Evaluate trained R1/R2 rotations on AIHWKit analog perplexity."
     )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to a JSON config file whose keys match AnalogPerplexityConfig fields.",
+    )
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
     parser.add_argument(
         "--device",
@@ -511,43 +554,47 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    config = AnalogPerplexityConfig(
-        model_name=args.model_name,
-        torch_dtype=resolve_torch_dtype(args.torch_dtype),
-        device=None if args.device in (None, "auto") else args.device,
-        checkpoint_path=args.checkpoint,
-        identity_r1_r2=args.identity_r1_r2,
-        rotation_mode=args.rotation_mode,
-        r2_mode=args.r2_mode,
-        seed=args.seed,
-        r2_seed_offset=args.r2_seed_offset,
-        dataset=args.dataset,
-        split=args.split,
-        max_length=args.max_length,
-        batch_size=args.batch_size,
-        max_eval_tokens=args.max_eval_tokens,
-        hardware_preset=args.hardware_preset,
-        analog_targets=tuple(args.analog_targets),
-        online_hadamards=args.online_hadamards,
-        page_analog_tiles=args.page_analog_tiles,
-        analog_storage_device=args.analog_storage_device,
-        analog_execution_device=args.analog_execution_device,
-        cpu_paged_analog_targets=tuple(args.cpu_paged_analog_targets),
-        clear_paged_cuda_cache=args.clear_paged_cuda_cache,
-        run_float_prepared=not args.skip_float_prepared,
-        run_analog_identity=not args.skip_analog_identity,
-        run_analog_rotated=not args.skip_analog_rotated,
-        use_wandb=args.use_wandb,
-        wandb_name=args.wandb_name,
-        progress_every=args.progress_every,
-    )
+    if args.config:
+        config = AnalogPerplexityConfig(**_load_json_config(args.config))
+    else:
+        config = AnalogPerplexityConfig(
+            model_name=args.model_name,
+            torch_dtype=resolve_torch_dtype(args.torch_dtype),
+            device=None if args.device in (None, "auto") else args.device,
+            checkpoint_path=args.checkpoint,
+            identity_r1_r2=args.identity_r1_r2,
+            rotation_mode=args.rotation_mode,
+            r2_mode=args.r2_mode,
+            seed=args.seed,
+            r2_seed_offset=args.r2_seed_offset,
+            dataset=args.dataset,
+            split=args.split,
+            max_length=args.max_length,
+            batch_size=args.batch_size,
+            max_eval_tokens=args.max_eval_tokens,
+            hardware_preset=args.hardware_preset,
+            analog_targets=tuple(args.analog_targets),
+            online_hadamards=args.online_hadamards,
+            page_analog_tiles=args.page_analog_tiles,
+            analog_storage_device=args.analog_storage_device,
+            analog_execution_device=args.analog_execution_device,
+            cpu_paged_analog_targets=tuple(args.cpu_paged_analog_targets),
+            clear_paged_cuda_cache=args.clear_paged_cuda_cache,
+            run_float_prepared=not args.skip_float_prepared,
+            run_analog_identity=not args.skip_analog_identity,
+            run_analog_rotated=not args.skip_analog_rotated,
+            use_wandb=args.use_wandb,
+            wandb_name=args.wandb_name,
+            progress_every=args.progress_every,
+            json_output_path=args.json_output,
+        )
     results = run_evaluation(config)
     _print_results(results)
     if config.use_wandb:
         _log_wandb(results, run_name=config.wandb_name)
-    if args.json_output:
-        os.makedirs(os.path.dirname(os.path.abspath(args.json_output)), exist_ok=True)
-        with open(args.json_output, "w", encoding="utf-8") as f:
+    if config.json_output_path:
+        os.makedirs(os.path.dirname(os.path.abspath(config.json_output_path)), exist_ok=True)
+        with open(config.json_output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
 
 
