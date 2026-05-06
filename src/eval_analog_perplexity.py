@@ -66,6 +66,11 @@ class AnalogPerplexityConfig:
     hardware_preset: str = "ideal_analog"
     analog_targets: Sequence[str] = DEFAULT_ANALOG_TARGETS
     online_hadamards: bool = False
+    page_analog_tiles: bool = False
+    analog_storage_device: str = "cpu"
+    analog_execution_device: Optional[str] = None
+    cpu_paged_analog_targets: Sequence[str] = ()
+    clear_paged_cuda_cache: bool = False
     run_float_prepared: bool = True
     run_analog_identity: bool = True
     run_analog_rotated: bool = True
@@ -227,6 +232,11 @@ def _build_analog_model(
         target_suffixes=config.analog_targets,
         hardware_preset=config.hardware_preset,
         online_hadamards=online_hadamards,
+        page_analog_tiles=config.page_analog_tiles,
+        analog_storage_device=config.analog_storage_device,
+        analog_execution_device=config.analog_execution_device or device,
+        cpu_paged_analog_targets=config.cpu_paged_analog_targets,
+        clear_paged_cuda_cache=config.clear_paged_cuda_cache,
     )
     return model, tokenizer, device, rotation_state, converted
 
@@ -250,6 +260,10 @@ def run_evaluation(config: AnalogPerplexityConfig) -> dict:
         "hardware_preset": config.hardware_preset,
         "analog_targets": list(config.analog_targets),
         "online_hadamards": config.online_hadamards,
+        "page_analog_tiles": config.page_analog_tiles,
+        "analog_storage_device": config.analog_storage_device,
+        "analog_execution_device": config.analog_execution_device,
+        "cpu_paged_analog_targets": list(config.cpu_paged_analog_targets),
         "rotation_mode": rotation_mode,
         "r2_mode": r2_mode,
         "seed": config.seed,
@@ -443,6 +457,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable R3 on o_proj and R4 on down_proj.",
     )
+    parser.add_argument(
+        "--page-analog-tiles",
+        action="store_true",
+        help="Store AIHWKit analog tiles on CPU and move one converted module to the execution device for each forward.",
+    )
+    parser.add_argument(
+        "--analog-storage-device",
+        default="cpu",
+        choices=["cpu", "cuda"],
+        help="Resident device for analog tiles when --page-analog-tiles is enabled.",
+    )
+    parser.add_argument(
+        "--analog-execution-device",
+        default=None,
+        choices=["cpu", "cuda"],
+        help="Device used for each paged analog forward. Defaults to --device/auto resolved device.",
+    )
+    parser.add_argument(
+        "--cpu-paged-analog-targets",
+        nargs="*",
+        default=[],
+        help="Paged analog target suffixes to execute on CPU even when the rest page to CUDA.",
+    )
+    parser.add_argument(
+        "--clear-paged-cuda-cache",
+        action="store_true",
+        help="Call torch.cuda.empty_cache() after each paged analog module returns to CPU.",
+    )
     parser.add_argument("--skip-float-prepared", action="store_true")
     parser.add_argument("--skip-analog-identity", action="store_true")
     parser.add_argument("--skip-analog-rotated", action="store_true")
@@ -478,6 +520,11 @@ def main() -> None:
         hardware_preset=args.hardware_preset,
         analog_targets=tuple(args.analog_targets),
         online_hadamards=args.online_hadamards,
+        page_analog_tiles=args.page_analog_tiles,
+        analog_storage_device=args.analog_storage_device,
+        analog_execution_device=args.analog_execution_device,
+        cpu_paged_analog_targets=tuple(args.cpu_paged_analog_targets),
+        clear_paged_cuda_cache=args.clear_paged_cuda_cache,
         run_float_prepared=not args.skip_float_prepared,
         run_analog_identity=not args.skip_analog_identity,
         run_analog_rotated=not args.skip_analog_rotated,
