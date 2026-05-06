@@ -13,21 +13,22 @@
     "o_proj",
     "up_proj",
     "gate_proj",
-    "down_proj"
+    "down_proj",
+    "lm_head"
   ],
-  "online_hadamards": true,
+  "online_hadamards": false,
   "page_analog_tiles": false,
   "analog_storage_device": "cpu",
   "analog_execution_device": null,
   "cpu_paged_analog_targets": [],
-  "rotation_mode": "hadamard_D",
-  "r2_mode": "hadamard_D",
-  "seed": 1,
+  "rotation_mode": "identity",
+  "r2_mode": "identity",
+  "seed": 0,
   "r2_seed_offset": 1,
   "runs": {
-    "analog_rotated": {
-      "nll": 10.166612178087234,
-      "ppl": 26019.77690601601,
+    "analog_identity": {
+      "nll": 21.67006877064705,
+      "ppl": 2577456174.6030903,
       "tokens": 8128,
       "converted_layers": [
         "model.layers.0.self_attn.q_proj",
@@ -183,19 +184,21 @@
         "model.layers.21.self_attn.o_proj",
         "model.layers.21.mlp.gate_proj",
         "model.layers.21.mlp.up_proj",
-        "model.layers.21.mlp.down_proj"
+        "model.layers.21.mlp.down_proj",
+        "lm_head"
       ],
-      "rotation_mode": "hadamard_D",
-      "checkpoint_path": null
+      "rotation_mode": "identity"
     }
   },
   "loaded_tokens": 8192,
   "grid": {
-    "run_kind": "hadamard_D",
-    "seed": 1,
-    "ir_drop": 0.0,
-    "input_bits": -1,
-    "input_resolution": -1.0,
-    "weight_noise": 0.005
+    "run_kind": "identity",
+    "seed": null,
+    "checkpoint_path": null,
+    "checkpoint_label": null,
+    "ir_drop": 0.1,
+    "input_bits": 6,
+    "input_resolution": 62.0,
+    "weight_noise": 0.1
   }
 }
