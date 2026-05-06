@@ -121,7 +121,7 @@ aimc-docker/
 | Define a new hardware loss | `src/loss.py` (create if absent) |
 | Implement rotation optimizer | `src/optimizer.py` (create if absent), modeled on SpinQuant's `optimize_rotation.py` |
 | Change analog HW configs | `1layertests/explore_rotations.py` (RPU configs inline, move to `src/` when reused) |
-| Full GPT-2 pipeline | `src/baseline_forward.py` → `src/apply_rotation.py` |
+| Full GPT-2 pipeline | `src/legacy/baseline_forward.py` → `src/legacy/apply_rotation.py` |
 | Visualize results | `1layertests/plot_results.py` |
 | Rebuild the environment | `aimc-docker/Dockerfile` |
 | Reference SpinQuant | https://github.com/facebookresearch/SpinQuant |
