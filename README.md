@@ -1,215 +1,247 @@
-# How to use
-## My workflow
-`
-(base) ao2844_columbia_edu@instance-20260325-210342:~/AnalogWeightRotations/aimc-docker$ sudo docker build --no-cache -t aihwkit-min .
-`
+# HPML Final Project: [Project Title]
 
-`
-$ export WANDB_API_KEY=<your-api-key>
-`
-
-`
-$ export WANDB_ENTITY=ao2844-columbia-university
-`
-
-`
-$ export WANDB_PROJECT=aimc-rotations
-`
-
-Mind the directory I run it in isn't aimc-docker:
-`
-(base) ao2844_columbia_edu@instance-20260325-210342:~/AnalogWeightRotations$ sudo docker run --gpus all -it --rm   -p 8888:8888   -v $(pwd):/workspace   -v /mnt/bigdisk/models:/mnt/bigdisk/models   -e WANDB_API_KEY=$WANDB_API_KEY   -e WANDB_ENTITY=$WANDB_ENTITY   -e WANDB_PROJECT=$WANDB_PROJECT   aihwkit-min
-`
-
-Models are cached to `/mnt/bigdisk/models` (the `HF_CACHE_DIR` default in the script). To override: `-e HF_CACHE_DIR=/your/path`.
-
-The HuggingFace model cache is stored at `/var/cache/huggingface` and shared across all users on the machine. This avoids re-downloading large models for each user or run. To set it up:
-
-```bash
-sudo mkdir -p /var/cache/huggingface
-sudo chmod 777 /var/cache/huggingface
-```
-
-To use a different location, change the `-v` mount in the docker run command and set `HF_HOME` accordingly:
-
-```bash
-# Custom cache location
-export HF_CACHE=/your/preferred/path
-sudo mkdir -p $HF_CACHE && sudo chmod 777 $HF_CACHE
-docker run ... -v $HF_CACHE:/root/.cache/huggingface ...
-```
-
-Outside Docker, point HuggingFace at the shared cache by setting:
-```bash
-export HF_HOME=/var/cache/huggingface
-```
-Add this to `/etc/environment` to apply system-wide for all users.
-
-`
-$ conda run -n aihwkit python -m src.legacy.baseline_forward
-`
-
-## Jupyter
-```
-$ source /opt/conda/etc/profile.d/conda.sh
-$ conda activate aihwkit
-$ conda run -n aihwkit jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root
-```
-
-# Overview
-`
-src/legacy/baseline_forward.py
-`
-
-Loads a Hugging Face model (currently GPT-2)
-Runs a baseline forward pass
-Captures intermediate activations via hooks
-Logs basic metrics to W&B
-Purpose: establish a reference point before applying rotations
-
-`
-src/legacy/baseline_forward.py
-`
-
-Loads a Hugging Face model (currently GPT-2)
-Runs a baseline forward pass
-Captures intermediate activations via hooks
-Logs basic metrics to W&B
-Purpose: establish a reference point before applying rotations
-
-`
-src/rotation_utils.py
-`
-
-Core math utilities:
-random_orthogonal_matrix(n)
-hadamard_matrix(n) (power-of-2 only)
-apply_rotation(x, R)
-helper functions (orthonormal checks, etc.)
-Purpose: define and apply rotation matrices
-
-`
-src/legacy/apply_rotation.py
-`
-
-Runs baseline forward pass
-Applies rotation → inverse rotation
-Compares outputs with baseline
-Logs error metrics to W&B
-Purpose: verify rotations preserve model computation (sanity check)
-
-`
-experiments/rotation_experiments.ipynb
-`
-
-Interactive experimentation
-Activation visualization (histograms, stats)
-Quick testing of rotations
-Purpose: exploration + generating plots for reports
+> **Course:** High Performance Machine Learning
+> **Semester:** Spring 2026
+> **Instructor:** Dr. Kaoutar El Maghraoui
 
 ---
 
-# 1-Layer Rotation Experiments (`1layertests/`)
+## Team Information
 
-Systematic evaluation of whether orthogonal input rotations reduce output error in a single analog linear layer extracted from GPT-2 small.
+- **Team Name:** Analog Hardware Rotations (team 13)
+- **Members:**
+  - William Trost (wit2102) — **
+  - Full Name 2 (UNI) — *role / area of contribution*
+  - Full Name 3 (UNI) — *role / area of contribution*
 
-**Key identity:** `y = Wx = (WR^T)(Rx)` for any orthogonal R. Exact in float; on analog hardware the rotation redistributes energy across crossbar rows/columns, potentially mitigating IR drop, weight noise, and ADC quantization error.
+## Submission
 
-## Layer under test
+- **GitHub repository:** [https://github.com/&lt;org&gt;/&lt;repo&gt;](https://github.com/org/repo)
+- **Final report:** [`deliverables/HPML_Final_Report.pdf`](deliverables/HPML_Final_Report.pdf)
+- **Final presentation:** [`deliverables/HPML_Final_Presentation.pptx`](deliverables/HPML_Final_Presentation.pptx)
+- **Experiment-tracking dashboard:** [link to public Wandb / MLflow / TensorBoard / Comet / Neptune dashboard]
 
-GPT-2 small (124M), first transformer block, MLP feed-forward projection:
-- `c_fc`: `(batch, 768) → (batch, 3072)`, weight shape `(3072, 768)`
-- Weights and input activations extracted via forward hook (realistic statistics)
+The final report PDF and the presentation file are checked into the `deliverables/` folder of this repository **and** uploaded to CourseWorks.
 
-## Rotations compared
+---
 
-| Name | Description |
-|------|-------------|
-| `identity` | No rotation (baseline) |
-| `sign_flip` | Random diagonal ±1 matrix D |
-| `rand_orth` | Random orthogonal via QR decomposition |
-| `hadamard` | Block-diagonal Hadamard `blkdiag(H₂₅₆, H₂₅₆, H₂₅₆) / √256` |
-| `hadamard_D` | `H @ D` — QuaRot-style: incoherence + sign spreading |
-| `sorted_perm` | Permutation sorting inputs by mean \|activation\| (energy balancing) |
+## 1. Problem Statement
 
-All rotations verified orthogonal (`R R^T ≈ I`) before use.
+We are building a pipeline to automatically train and apply rotation matrices to llama models. The goal is to build out and apply custom rotation matrices to change the weights of the tinyllama model such that the output is unchanged in the ideal case, we dont have to fully finetune, and we distribute the weights such that the hardware non-idealities are less present.
 
-## Analog hardware configs
+---
 
-| Config | Description |
-|--------|-------------|
-| `irdrop_only` | IR drop = 1.0, all other noise disabled |
-| `w_noise_only` | Additive weight noise σ=0.02, no IR drop |
-| `inp_quant` | 8-bit input + output quantization only |
-| `full_pcm` | PCM-like noise model + IR drop = 0.5 + 10-bit ADC/DAC (realistic) |
+## 2. Model/Application Description
 
-## Metrics
+Briefly describe the model(s) and stack you used:
 
-Each `(config, rotation)` combination is averaged over 20 independent noise trials:
-- `rel_error` — `‖y_analog − y_ideal‖_F / ‖y_ideal‖_F`
-- `snr_db` — `10 log₁₀(‖y_ideal‖² / ‖y_analog − y_ideal‖²)`
-- `cos_sim` — mean per-sample cosine similarity
+- **Model architecture:** TinyLlama/TinyLlama-1.1B-Chat-v1.0
+- **Framework:** PyTorch 2.10, IBM/AIHWKIT 1.1.0
+- **Dataset:** name, size, license, and link.
+- **Custom layers or modifications:** The addition of rotation matrices r1-r4, as taught in Spinquant, but trained based on hardware non-idealities
+- **Hardware target:** Generic In-memory compute chips with typical hardware non-idealities.
 
-## Key results
+---
 
-Relative L2 error (mean):
+## 3. Final Results Summary
 
-| Config | identity | sign_flip | rand_orth | hadamard | hadamard_D | sorted_perm |
-|--------|----------|-----------|-----------|----------|------------|-------------|
-| IR drop only | 6.85% | 6.85% | **0.13%** | **0.13%** | **0.13%** | 6.82% |
-| Weight noise | 9.07% | 9.07% | **6.24%** | **6.24%** | **6.24%** | 9.05% |
-| 8-bit quant | 7.34% | 7.34% | **2.82%** | **2.83%** | **2.83%** | 7.35% |
-| Full PCM | 14.83% | 14.84% | 6.29% | 6.40% | **6.10%** | 15.99% |
+Replace the numbers below with your measured values. Add or remove rows to fit your study.
 
-**Takeaways:**
-- `rand_orth`, `hadamard`, and `hadamard_D` all yield large error reductions (~50–98%) across every config
-- `sign_flip` and `sorted_perm` provide no meaningful benefit — they don't redistribute energy incoherently
-- `hadamard_D` (QuaRot-style) is the best single rotation under the realistic full PCM config (−58.8% vs identity)
-- Results are deterministic for `irdrop_only` / `inp_quant` (no stochastic noise), and low-variance for the others
+| Metric                       | Baseline | Optimized | Δ (Improvement) |
+| ---------------------------- | -------- | --------- | --------------- |
+| Top-1 Accuracy / Task Metric | XX.XX%   | XX.XX%    | ±X.XX pp        |
+| Inference Latency (p50)      | XX.XX ms | XX.XX ms  | XX% faster      |
+| Inference Throughput         | XXX tok/s| XXX tok/s | XX× higher      |
+| Training Time / Epoch        | XX s     | XX s      | XX% faster      |
+| Peak GPU Memory              | XX GB    | XX GB     | XX% less        |
+| Model Size on Disk           | XX MB    | XX MB     | XX% smaller     |
+| Energy / Sample (optional)   | X.XX J   | X.XX J    | XX% less        |
 
-## Running the experiment
+**Hardware:** 1x Nvidia 3090
 
-```bash
-# Full experiment (loads GPT-2, runs 20 trials × 4 configs × 6 rotations)
-$ conda run -n aihwkit python -m 1layertests.explore_rotations
+**Headline result (one sentence):** *By applying the rotation matrices, we were able to achieve substantially lower perplexity on the wikitext-2 dataset compared to the non-rotated model*
+
+---
+
+## 4. Repository Structure
+
+```
+.
+├── README.md
+├── LICENSE
+├── requirements.txt
+├── configs/                # JSON configs for every reported experiment
+├── deliverables/           # Final report (PDF) and final presentation (PPT/PDF) — same files uploaded to CourseWorks
+│   ├── HPML_Final_Report.pdf
+│   └── HPML_Final_Presentation.pptx
+├── scripts/
+│   ├── download_dataset.sh
+│   ├── run_baseline.sh
+│   └── run_optimized.sh
+├── src/
+│   ├── analog_llama.py     # Analog LLaMA wrapper
+│   ├── hardware_configs.py # Analog hardware presets
+│   ├── train_full_analog.py
+│   ├── train_layerwise_analog.py
+│   ├── eval_analog_perplexity.py
+│   ├── optimizer.py    
+│   ├── rotation_utils.py    
+│   └── ...                 # Rotation, quantization, pipeline, and evaluation helpers
+├── tests/
+│   ├── test_r2_rotation.py
+│   └── test_runtime_rotation.py
+├── checkpoints/            # Generated model checkpoints
+├── logs/                   # Runtime logs
+├── profiler_traces/        # Generated profiler traces
+├── results/                # Experiment outputs, summaries, and plots
+└── wandb/                  # Local Weights & Biases run metadata
 ```
 
-Or inside the Docker container (from `AnalogWeightRotations/`):
+---
+
+## 5. Reproducibility Instructions
+
+### A. Environment Setup
 
 ```bash
-$ conda run -n aihwkit python 1layertests/explore_rotations.py
+# Clone
+git clone https://github.com/IsaacTrost/AnalogWeightRotations.git 
+cd AnalogWeightRotations
+
+# Build the docker container
+
+cd aimc-docker
+docker build --no-cache -t aihwkit-min .
+
+# run the docker container
+./run.sh
 ```
 
-Results and plots are saved to `1layertests/results/` and logged to W&B under the configured project.
+**System requirements:** Docker or Podman with GPU passthrough enabled, NVIDIA Container Toolkit / NVIDIA container runtime, and a host NVIDIA driver compatible with the CUDA version in `nvcr.io/nvidia/pytorch:25.04-py3` (CUDA 12.x; 570-series drivers are recommended). CUDA itself does not need to be installed on the host because the container provides the CUDA user-space libraries. Use a GPU with at least 16 GB VRAM; 24 GB is preferred because AIHWKIT can be memory hungry and leaky.
 
-## Analog perplexity evaluation
+### B. Experiment Tracking Dashboard
 
-Evaluate a trained full-analog R1/R2 checkpoint by baking the rotations into a prepared LLaMA-style model, converting selected projections to AIHWKit, and measuring packed-token WikiText perplexity:
+Public experiment-tracking dashboard with training and evaluation metrics, system profiling, and baseline vs. optimized comparisons:
+
+> **🔗 Dashboard:** [https://wandb.ai/&lt;team&gt;/&lt;project&gt;](https://wandb.ai/team/project)
+>
+> *Platform used:* [Weights & Biases / MLflow / TensorBoard / Comet / Neptune / other]
+
+Verify the link opens in an incognito browser. The dashboard includes a curated **report** that walks through the optimization story. If your platform does not support public links (e.g., self-hosted MLflow), a static export is committed under `results/dashboard/` instead.
+
+### C. Dataset
+
+The dataset is *not* committed to the repository. It is small, and manually pulled into the docker container huggingface cache if scripts need it.
+
+### D. Training
+
+To reproduce the baseline:
 
 ```bash
-# Fast smoke test inside the Docker container.
-conda run -n aihwkit python -m src.eval_analog_perplexity \
-  --checkpoint checkpoints/full_analog.pt \
-  --hardware-preset ideal_analog \
-  --analog-targets down_proj \
-  --max-eval-tokens 2048
-
-# Hardware nonideality run with the full PCM preset and SpinQuant online R3/R4.
-conda run -n aihwkit python -m src.eval_analog_perplexity \
-  --checkpoint checkpoints/full_analog.pt \
-  --hardware-preset full_pcm \
-  --online-hadamards \
-  --max-eval-tokens 8192
+python src/train.py --config configs/baseline.yaml
 ```
 
-Each run reports `float_prepared`, `analog_identity`, and `analog_rotated` so the hardware-only baseline and trained-rotation result are directly comparable.
-
-## Regenerating plots without re-running
-
-`plot_results.py` hardcodes the completed run's output and regenerates all figures locally:
+To reproduce the optimized run:
 
 ```bash
-$ conda run -n aihwkit python 1layertests/plot_results.py
+python src/train.py --config configs/optimized.yaml
 ```
 
-Produces: `results/rel_error.png`, `results/snr_db.png`, `results/improvement_heatmap.png`, `results/snr_panel.png`, `results/summary_table.png`
+### E. Evaluation
+
+```bash
+python src/eval.py --weights checkpoints/best_model.pth --config configs/optimized.yaml
+```
+
+### F. Profiling
+
+To regenerate the profiler traces referenced in the report:
+
+```bash
+python src/profile.py --config configs/optimized.yaml --output results/trace.json
+# View in chrome://tracing or perfetto.dev
+```
+
+### G. Quickstart: Reproduce the Headline Result
+
+The following sequence reproduces the headline number in Section 3 end-to-end (≈ XX minutes on a single A100):
+
+```bash
+# 1. Set up environment
+pip install -r requirements.txt
+
+# 2. Download dataset
+bash scripts/download_dataset.sh
+
+# 3. Run optimized training (or skip if checkpoint provided in releases)
+bash scripts/run_optimized.sh
+
+# 4. Evaluate
+python src/eval.py --weights checkpoints/best_model.pth
+```
+
+---
+
+## 6. Results and Observations
+
+A short narrative (3–6 bullets) summarizing what you found. Include 1–2 representative figures from `results/` directly in this README so a reader gets the gist without opening Wandb.
+
+- *Optimization 1 (e.g., torch.compile + bfloat16):* X% latency reduction, attributable to [reason].
+- *Optimization 2 (e.g., FlashAttention-2):* Y% memory reduction at long context lengths.
+- *Optimization 3 (e.g., paged KV cache):* Z× throughput gain at batch size 32.
+- *What did not work:* [briefly note any optimization that failed or regressed performance, and why you think it failed].
+
+![Baseline vs Optimized latency](results/figures/latency_comparison.png)
+
+---
+
+## 7. Notes
+
+- Source files live under `src/`, configuration under `configs/`, and scripts under `scripts/`.
+- Trained checkpoints are stored in [GitHub Releases / Hugging Face Hub / external bucket] — see `docs/checkpoints.md`.
+- All secrets (API keys, Wandb tokens) are loaded from environment variables. See `.env.example`.
+
+### AI Use Disclosure
+
+*Per the HPML AI Use Policy (posted on CourseWorks). Required for every submission.*
+
+**Did your team use any AI tool in completing this project?**
+
+- [ ] No, we did not use any AI tool.
+- [ ] Yes, we used AI assistance as described below.
+
+**Tool(s) used:** *e.g., ChatGPT, Claude, GitHub Copilot, Cursor*
+
+**Specific purpose:** *e.g., debugged a CUDA OOM error, clarified SM occupancy, polished prose in the report's introduction*
+
+**Sections affected:** *e.g., src/profile.py setup, README §6 results narrative, report §V Discussion*
+
+**How we verified correctness:** *e.g., re-ran every reported experiment ourselves; confirmed profiler-trace interpretations against the raw traces in results/; rewrote AI-suggested code in our own words and confirmed it produces the same numbers as the version we hand-wrote.*
+
+By submitting this project, the team confirms that the analysis, interpretations, and conclusions are our own, and that any AI assistance is fully disclosed above. The same disclosure block appears as an appendix in the final report.
+
+### License
+
+Released under the MIT License. See [`LICENSE`](LICENSE).
+
+### Citation
+
+If you build on this work, please cite:
+
+```bibtex
+@misc{teamname2026hpml,
+  title  = {[Project Title]},
+  author = {Last1, First1 and Last2, First2 and Last3, First3},
+  year   = {2026},
+  note   = {HPML Spring 2026 Final Project, Columbia University},
+  url    = {https://github.com/<org>/<repo>}
+}
+```
+
+### Contact
+
+Open a GitHub Issue or email *[wit2102@columbia.edu]*.
+
+---
+
+*HPML Spring 2026 — Dr. Kaoutar El Maghraoui — Columbia University*
