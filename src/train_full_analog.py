@@ -16,9 +16,10 @@ quantization rounding and IR drop both depend on the actual values in W_eff,
 which change with R. This gives a real nonzero gradient through R.
 """
 import argparse
+import json
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Callable, Optional
 
 import torch
@@ -96,6 +97,40 @@ class TrainFullAnalogConfig:
     log_every: int = 10
     use_wandb: bool = True
     checkpoint_path: Optional[str] = None
+
+
+def _load_json_config(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        raw_config = json.load(f)
+    if not isinstance(raw_config, dict):
+        raise TypeError(f"Config file {path} must contain a JSON object.")
+
+    aliases = {
+        "checkpoint": "checkpoint_path",
+    }
+    inverted_aliases = {
+        "no_train_r2": "train_r2",
+        "no_online_hadamards": "online_hadamards",
+        "no_wandb": "use_wandb",
+    }
+    field_names = {field.name for field in fields(TrainFullAnalogConfig)}
+    config = {}
+    for raw_key, value in raw_config.items():
+        normalized_key = raw_key.replace("-", "_")
+        if normalized_key in inverted_aliases:
+            key = inverted_aliases[normalized_key]
+            value = not value
+        else:
+            key = aliases.get(normalized_key, normalized_key)
+        if key not in field_names:
+            valid = ", ".join(sorted(field_names | set(aliases) | set(inverted_aliases)))
+            raise ValueError(f"Unknown config key {raw_key!r} in {path}. Valid keys: {valid}")
+        config[key] = value
+
+    if "torch_dtype" in config:
+        config["torch_dtype"] = resolve_torch_dtype(config["torch_dtype"])
+
+    return config
 
 
 class AnalogRotatedLinear(torch.nn.Module):
@@ -468,6 +503,11 @@ def train_full_analog(config: TrainFullAnalogConfig) -> dict:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train rotations against the analog LM loss.")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to a JSON config file whose keys match TrainFullAnalogConfig fields.",
+    )
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
     parser.add_argument("--torch-dtype", default="float32", choices=["auto", *TORCH_DTYPE_CHOICES.keys()])
     parser.add_argument("--init-mode", default="identity",
@@ -496,27 +536,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    config = TrainFullAnalogConfig(
-        model_name=args.model_name,
-        torch_dtype=resolve_torch_dtype(args.torch_dtype),
-        init_mode=args.init_mode,
-        seed=args.seed,
-        train_r2=not args.no_train_r2,
-        r2_mode=args.r2_mode,
-        r2_seed_offset=args.r2_seed_offset,
-        lr=args.lr,
-        momentum=args.momentum,
-        num_steps=args.num_steps,
-        max_length=args.max_length,
-        batch_size=args.batch_size,
-        dataset=args.dataset,
-        num_bits=args.num_bits,
-        ir_drop_coeff=args.ir_drop_coeff,
-        online_hadamards=not args.no_online_hadamards,
-        log_every=args.log_every,
-        use_wandb=not args.no_wandb,
-        checkpoint_path=args.checkpoint,
-    )
+    if args.config:
+        config = TrainFullAnalogConfig(**_load_json_config(args.config))
+    else:
+        config = TrainFullAnalogConfig(
+            model_name=args.model_name,
+            torch_dtype=resolve_torch_dtype(args.torch_dtype),
+            init_mode=args.init_mode,
+            seed=args.seed,
+            train_r2=not args.no_train_r2,
+            r2_mode=args.r2_mode,
+            r2_seed_offset=args.r2_seed_offset,
+            lr=args.lr,
+            momentum=args.momentum,
+            num_steps=args.num_steps,
+            max_length=args.max_length,
+            batch_size=args.batch_size,
+            dataset=args.dataset,
+            num_bits=args.num_bits,
+            ir_drop_coeff=args.ir_drop_coeff,
+            online_hadamards=not args.no_online_hadamards,
+            log_every=args.log_every,
+            use_wandb=not args.no_wandb,
+            checkpoint_path=args.checkpoint,
+        )
     result = train_full_analog(config)
     print(f"final analog_lm_loss={result['final_analog_lm_loss']:.4f}")
 
