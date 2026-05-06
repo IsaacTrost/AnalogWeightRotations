@@ -9,13 +9,13 @@ from src.rotation_utils import get_rotation_matrix
 
 def rotate_input_weight_tensor(weight: torch.Tensor, rotation: torch.Tensor) -> torch.Tensor:
     """Rotate a linear map that consumes the hidden dimension on its input side."""
-    rotated = weight.data.to(dtype=ROTATION_COMPUTE_DTYPE) @ rotation.to(dtype=ROTATION_COMPUTE_DTYPE)
+    rotated = weight.to(dtype=ROTATION_COMPUTE_DTYPE) @ rotation.to(dtype=ROTATION_COMPUTE_DTYPE)
     return rotated.to(weight.dtype)
 
 
 def rotate_output_weight_tensor(weight: torch.Tensor, rotation: torch.Tensor) -> torch.Tensor:
     """Rotate a linear map that writes back into the hidden dimension."""
-    rotated = rotation.to(dtype=ROTATION_COMPUTE_DTYPE).T @ weight.data.to(dtype=ROTATION_COMPUTE_DTYPE)
+    rotated = rotation.to(dtype=ROTATION_COMPUTE_DTYPE).T @ weight.to(dtype=ROTATION_COMPUTE_DTYPE)
     return rotated.to(weight.dtype)
 
 
@@ -23,7 +23,7 @@ def rotate_output_bias_tensor(bias: Optional[torch.Tensor], rotation: torch.Tens
     """Rotate a bias vector that lives in the residual hidden space."""
     if bias is None:
         return None
-    rotated = rotation.to(dtype=ROTATION_COMPUTE_DTYPE).T @ bias.data.to(dtype=ROTATION_COMPUTE_DTYPE)
+    rotated = rotation.to(dtype=ROTATION_COMPUTE_DTYPE).T @ bias.to(dtype=ROTATION_COMPUTE_DTYPE)
     return rotated.to(bias.dtype)
 
 
@@ -46,7 +46,7 @@ def rotate_blockwise_output_weight_tensor(
     block_size: int,
 ) -> torch.Tensor:
     """Rotate each output block when a projection emits per-head features such as `v_proj`."""
-    rotated = weight.data.to(dtype=ROTATION_COMPUTE_DTYPE)
+    rotated = weight.to(dtype=ROTATION_COMPUTE_DTYPE)
     block_rotation = rotation.to(dtype=ROTATION_COMPUTE_DTYPE)
     blocks = _reshape_weight_blocks(rotated, block_size, axis="rows")
     rotated_blocks = torch.matmul(block_rotation.T.unsqueeze(0), blocks)
@@ -59,7 +59,7 @@ def rotate_blockwise_input_weight_tensor(
     block_size: int,
 ) -> torch.Tensor:
     """Rotate each input block when a projection consumes concatenated head features such as `o_proj`."""
-    rotated = weight.data.to(dtype=ROTATION_COMPUTE_DTYPE)
+    rotated = weight.to(dtype=ROTATION_COMPUTE_DTYPE)
     block_rotation = rotation.to(dtype=ROTATION_COMPUTE_DTYPE)
     blocks = _reshape_weight_blocks(rotated, block_size, axis="cols")
     rotated_blocks = torch.matmul(blocks, block_rotation)

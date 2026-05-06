@@ -69,6 +69,40 @@ class AnalogOnlineHadamardLinear(torch.nn.Module):
         return self.analog_linear(apply_block_hadamard(inputs, self.hadamard_block))
 
 
+class AnalogLinearSequenceWrapper(torch.nn.Module):
+    """Flatten sequence/batch dimensions before AIHWKit and restore them after.
+
+    AIHWKit's torch IR-drop tile expects a 2D activation matrix. Hugging Face
+    transformer blocks call Linear modules with [batch, seq, hidden], so this
+    wrapper keeps the module shape-compatible with standard LLaMA forwards.
+    """
+
+    def __init__(self, analog_linear: torch.nn.Module) -> None:
+        super().__init__()
+        self.analog_linear = analog_linear
+        self.in_features = analog_linear.in_features
+        self.out_features = analog_linear.out_features
+
+    @property
+    def weight(self):
+        return getattr(self.analog_linear, "weight", None)
+
+    @property
+    def bias(self):
+        return getattr(self.analog_linear, "bias", None)
+
+    def named_analog_layers(self, *args, **kwargs):
+        return self.analog_linear.named_analog_layers(*args, **kwargs)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        if inputs.ndim <= 2:
+            return self.analog_linear(inputs)
+        leading_shape = inputs.shape[:-1]
+        flat_inputs = inputs.reshape(-1, inputs.shape[-1])
+        flat_outputs = self.analog_linear(flat_inputs)
+        return flat_outputs.reshape(*leading_shape, flat_outputs.shape[-1])
+
+
 def _rotate_linear_input_with_hadamard(
     linear: torch.nn.Linear,
     hadamard_block: torch.Tensor,
@@ -196,6 +230,8 @@ def convert_llama_linears_to_analog(
                 dtype=linear.weight.dtype,
             )
             analog = AnalogOnlineHadamardLinear(analog, online_hadamard)
+
+        analog = AnalogLinearSequenceWrapper(analog)
 
         setattr(parent, leaf_name, analog)
         converted.append(module_name)

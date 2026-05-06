@@ -139,6 +139,20 @@ def build_quant_10bit_config():
     return cfg
 
 
+def build_ir_drop_quant_8bit_config():
+    """
+    Cheap IR-drop plus 8-bit DAC/ADC quantization.
+
+    Uses regular InferenceRPUConfig, not the expensive torch Thevenin IR-drop
+    tile. This is intended for faster full-model perplexity checks.
+    """
+    cfg = build_ir_drop_only_config()
+    cfg.forward.inp_res = 2**8 - 2
+    cfg.forward.out_res = 2**8 - 2
+    cfg.forward.out_bound = 1.0
+    return cfg
+
+
 def build_full_pcm_config():
     """
     Realistic PCM-style full stack.
@@ -201,6 +215,20 @@ def build_advanced_ir_drop_config():
     return cfg
 
 
+def build_advanced_ir_drop_8bit_config():
+    """
+    Advanced time-dependent IR-drop with 8-bit DAC/ADC quantization.
+
+    This matches the default hardware objective used by src.train_analog:
+    TorchInferenceRPUConfigIRDropT, IR drop enabled, 8-bit input/output
+    resolution, and no noise/bound management.
+    """
+    cfg = build_advanced_ir_drop_config()
+    cfg.forward.inp_res = 2**8 - 2
+    cfg.forward.out_res = 2**8 - 2
+    return cfg
+
+
 HARDWARE_PRESET_BUILDERS: Dict[str, Callable[[], object]] = {
     # Preferred new names
     "ideal_analog": build_ideal_analog_config,
@@ -208,15 +236,19 @@ HARDWARE_PRESET_BUILDERS: Dict[str, Callable[[], object]] = {
     "weight_noise_only": build_weight_noise_only_config,
     "quant_10bit": build_quant_10bit_config,
     "quant_only": build_quant_only_config,
+    "ir_drop_quant_8bit": build_ir_drop_quant_8bit_config,
     "full_stack": build_full_pcm_config,
     "advanced_ir_drop": build_advanced_ir_drop_config,
+    "advanced_ir_drop_8bit": build_advanced_ir_drop_8bit_config,
 
     # Backward-compatible names from 1layertests/explore_rotations.py
     "irdrop_only": build_ir_drop_only_config,
     "w_noise_only": build_weight_noise_only_config,
     "inp_quant": build_quant_only_config,
+    "irdrop_quant_8bit": build_ir_drop_quant_8bit_config,
     "full_pcm": build_full_pcm_config,
     "adv_irdrop": build_advanced_ir_drop_config,
+    "adv_irdrop_8bit": build_advanced_ir_drop_8bit_config,
 }
 
 

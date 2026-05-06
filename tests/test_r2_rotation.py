@@ -209,6 +209,39 @@ class R2RotationTests(unittest.TestCase):
         self.assertTrue(torch.allclose(expected_o_weight, runtime_o_weight))
         self.assertTrue(torch.allclose(expected_o_bias, runtime_o_bias))
 
+    def test_runtime_weight_builder_preserves_composed_r1_r2_gradients(self) -> None:
+        """Training R1 and R2 together requires the R2 transform not to detach the R1 transform."""
+        hidden_size = 8
+        head_dim = 4
+        weight = torch.randn(hidden_size, hidden_size, dtype=torch.float32)
+        r1 = torch.nn.Parameter(torch.eye(hidden_size, dtype=torch.float32))
+        r2 = torch.nn.Parameter(torch.eye(head_dim, dtype=torch.float32))
+
+        runtime_v_weight, _ = build_runtime_linear_weight_and_bias(
+            weight,
+            None,
+            r1=r1,
+            apply_r1="input",
+            r2=r2,
+            apply_r2="output",
+            head_dim=head_dim,
+        )
+        runtime_o_weight, _ = build_runtime_linear_weight_and_bias(
+            weight,
+            None,
+            r1=r1,
+            apply_r1="output",
+            r2=r2,
+            apply_r2="input",
+            head_dim=head_dim,
+        )
+        (runtime_v_weight.pow(2).mean() + runtime_o_weight.pow(2).mean()).backward()
+
+        self.assertIsNotNone(r1.grad)
+        self.assertIsNotNone(r2.grad)
+        self.assertGreater(r1.grad.norm().item(), 0.0)
+        self.assertGreater(r2.grad.norm().item(), 0.0)
+
     def test_explicit_checkpoint_baker_matches_runtime_weight_builder(self) -> None:
         """Baking a checkpoint-shaped R1/R2 state should match the runtime effective weights."""
         model = _FakeLlama(hidden_size=8, num_heads=2, num_layers=1)
