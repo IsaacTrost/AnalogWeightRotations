@@ -34,14 +34,15 @@ def _require_aihwkit():
 
 def build_ideal_analog_config():
     """
-    Ideal-ish AnalogLinear baseline.
+    Perfect AnalogLinear sanity baseline.
 
-    Uses AIHWKit AnalogLinear, but disables the explicit hardware losses we
-    isolate in the other presets.
+    Uses AIHWKit AnalogLinear while bypassing forward nonidealities. This is the
+    preset that should match torch.nn.Linear up to small numerical tolerance.
     """
     aihw = _require_aihwkit()
 
     cfg = aihw["InferenceRPUConfig"]()
+    cfg.forward.is_perfect = True
     cfg.forward.ir_drop = 0.0
     cfg.forward.w_noise = 0.0
     cfg.forward.w_noise_type = aihw["WeightNoiseType"].NONE
@@ -52,6 +53,8 @@ def build_ideal_analog_config():
     cfg.forward.out_bound = -1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
     cfg.forward.noise_management = aihw["NoiseManagementType"].NONE
+    cfg.noise_model = None
+    cfg.drift_compensation = None
     return cfg
     
 
@@ -74,7 +77,9 @@ def build_ir_drop_only_config():
     cfg.forward.out_res = -1.0
     cfg.forward.out_bound = -1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
-    cfg.forward.noise_management = aihw["NoiseManagementType"].NONE
+    cfg.forward.noise_management = aihw["NoiseManagementType"].ABS_MAX
+    cfg.noise_model = None
+    cfg.drift_compensation = None
     return cfg
 
 
@@ -96,15 +101,20 @@ def build_weight_noise_only_config():
     cfg.forward.out_res = -1.0
     cfg.forward.out_bound = -1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
-    cfg.forward.noise_management = aihw["NoiseManagementType"].NONE
+    cfg.forward.noise_management = aihw["NoiseManagementType"].ABS_MAX
+    cfg.noise_model = None
+    cfg.drift_compensation = None
     return cfg
 
 
 def build_quant_only_config():
     """
-    8-bit DAC + ADC quantization only.
+    8-bit DAC/input quantization only.
 
-    Matches cfg_inp_quant() from 1layertests/explore_rotations.py.
+    The old 1-layer cfg_inp_quant() also set out_res and out_bound=1.0.
+    In a full transformer, that fixed ADC range clips every analog layer output
+    to +/-1 and dominates perplexity. Keep this preset as an isolated input
+    quantization test; ADC quantization needs calibrated per-layer bounds.
     """
     aihw = _require_aihwkit()
 
@@ -115,9 +125,36 @@ def build_quant_only_config():
     cfg.forward.inp_noise = 0.0
     cfg.forward.out_noise = 0.0
     cfg.forward.inp_res = 2**8 - 2
-    cfg.forward.out_res = 2**8 - 2
+    cfg.forward.out_res = -1.0
+    cfg.forward.out_bound = -1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
-    cfg.forward.noise_management = aihw["NoiseManagementType"].NONE
+    cfg.forward.noise_management = aihw["NoiseManagementType"].ABS_MAX
+    cfg.noise_model = None
+    cfg.drift_compensation = None
+    return cfg
+
+
+def build_quant_10bit_config():
+    """10-bit DAC + ADC quantization preset with calibrated AIHWKit scaling."""
+    cfg = build_quant_only_config()
+    cfg.forward.inp_res = 2**10 - 2
+    cfg.forward.out_res = 2**10 - 2
+    return cfg
+
+
+def build_ir_drop_quant_8bit_config():
+    """
+    Cheap IR-drop plus 8-bit DAC/input quantization.
+
+    Uses regular InferenceRPUConfig, not the expensive torch Thevenin IR-drop
+    tile. Output ADC quantization is intentionally disabled here because a
+    fixed out_bound=1.0 clips full-model activations and overwhelms the IR-drop
+    signal. Use a calibrated ADC-bound preset for output quantization studies.
+    """
+    cfg = build_ir_drop_only_config()
+    cfg.forward.inp_res = 2**8 - 2
+    cfg.forward.out_res = -1.0
+    cfg.forward.out_bound = -1.0
     return cfg
 
 
@@ -149,8 +186,9 @@ def build_full_pcm_config():
     cfg.forward.out_noise = 0.0
     cfg.forward.inp_res = 2**10 - 2
     cfg.forward.out_res = 2**10 - 2
+    cfg.forward.out_bound = 1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
-    cfg.forward.noise_management = aihw["NoiseManagementType"].NONE
+    cfg.forward.noise_management = aihw["NoiseManagementType"].ABS_MAX
     cfg.drift_compensation = aihw["GlobalDriftCompensation"]()
     return cfg
 
@@ -182,21 +220,40 @@ def build_advanced_ir_drop_config():
     return cfg
 
 
+def build_advanced_ir_drop_8bit_config():
+    """
+    Advanced time-dependent IR-drop with 8-bit DAC/ADC quantization.
+
+    This matches the default hardware objective used by src.train_analog:
+    TorchInferenceRPUConfigIRDropT, IR drop enabled, 8-bit input/output
+    resolution, and no noise/bound management.
+    """
+    cfg = build_advanced_ir_drop_config()
+    cfg.forward.inp_res = 2**8 - 2
+    cfg.forward.out_res = 2**8 - 2
+    return cfg
+
+
 HARDWARE_PRESET_BUILDERS: Dict[str, Callable[[], object]] = {
     # Preferred new names
     "ideal_analog": build_ideal_analog_config,
     "ir_drop_only": build_ir_drop_only_config,
     "weight_noise_only": build_weight_noise_only_config,
+    "quant_10bit": build_quant_10bit_config,
     "quant_only": build_quant_only_config,
+    "ir_drop_quant_8bit": build_ir_drop_quant_8bit_config,
     "full_stack": build_full_pcm_config,
     "advanced_ir_drop": build_advanced_ir_drop_config,
+    "advanced_ir_drop_8bit": build_advanced_ir_drop_8bit_config,
 
     # Backward-compatible names from 1layertests/explore_rotations.py
     "irdrop_only": build_ir_drop_only_config,
     "w_noise_only": build_weight_noise_only_config,
     "inp_quant": build_quant_only_config,
+    "irdrop_quant_8bit": build_ir_drop_quant_8bit_config,
     "full_pcm": build_full_pcm_config,
     "adv_irdrop": build_advanced_ir_drop_config,
+    "adv_irdrop_8bit": build_advanced_ir_drop_8bit_config,
 }
 
 
@@ -216,6 +273,23 @@ def requires_program_analog_weights(hardware_preset: str) -> bool:
     Return whether a preset needs layer.program_analog_weights() after loading weights.
     """
     return hardware_preset in HARDWARE_PRESETS_REQUIRING_PROGRAMMING
+
+
+def disable_mapping_fragmentation(config) -> None:
+    """
+    Disable AIHWKit's default layer splitting into many mapped sub-tiles.
+
+    Large transformer linears otherwise fragment into many 512x512 tiles, which
+    can make conversion require far more memory than the raw weights. Setting
+    both mapping limits to 0 asks AIHWKit to use one tile per Linear layer.
+    """
+    mapping = getattr(config, "mapping", None)
+    if mapping is None:
+        return
+    if hasattr(mapping, "max_input_size"):
+        mapping.max_input_size = 0
+    if hasattr(mapping, "max_output_size"):
+        mapping.max_output_size = 0
 
 
 def build_rpu_config(
@@ -238,6 +312,8 @@ def build_rpu_config(
 
     if overrides:
         _apply_overrides(config, overrides)
+
+    disable_mapping_fragmentation(config)
 
     return copy.deepcopy(config)
 

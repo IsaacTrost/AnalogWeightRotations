@@ -14,14 +14,17 @@ if str(REPO_ROOT) not in sys.path:
 from src.llama_rotation import (  # noqa: E402
     _rotate_blockwise_input_weight,
     _rotate_blockwise_output_weight,
+    bake_rotation_state_into_model,
+    identity_rotation_state,
     rotate_input_weight_tensor,
     rotate_output_bias_tensor,
     rotate_output_weight_tensor,
     rotate_model,
 )
 from src.rotation_precision import ROTATION_COMPUTE_DTYPE  # noqa: E402
-from src.rotation_utils import get_rotation_matrix  # noqa: E402
+from src.rotation_utils import get_rotation_matrix, hadamard_matrix  # noqa: E402
 from src.runtime_rotation import build_runtime_linear_weight_and_bias  # noqa: E402
+from src.analog_llama import apply_block_hadamard  # noqa: E402
 
 
 class _FakeAttention(torch.nn.Module):
@@ -205,6 +208,96 @@ class R2RotationTests(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(expected_o_weight, runtime_o_weight))
         self.assertTrue(torch.allclose(expected_o_bias, runtime_o_bias))
+
+    def test_runtime_weight_builder_preserves_composed_r1_r2_gradients(self) -> None:
+        """Training R1 and R2 together requires the R2 transform not to detach the R1 transform."""
+        hidden_size = 8
+        head_dim = 4
+        weight = torch.randn(hidden_size, hidden_size, dtype=torch.float32)
+        r1 = torch.nn.Parameter(torch.eye(hidden_size, dtype=torch.float32))
+        r2 = torch.nn.Parameter(torch.eye(head_dim, dtype=torch.float32))
+
+        runtime_v_weight, _ = build_runtime_linear_weight_and_bias(
+            weight,
+            None,
+            r1=r1,
+            apply_r1="input",
+            r2=r2,
+            apply_r2="output",
+            head_dim=head_dim,
+        )
+        runtime_o_weight, _ = build_runtime_linear_weight_and_bias(
+            weight,
+            None,
+            r1=r1,
+            apply_r1="output",
+            r2=r2,
+            apply_r2="input",
+            head_dim=head_dim,
+        )
+        (runtime_v_weight.pow(2).mean() + runtime_o_weight.pow(2).mean()).backward()
+
+        self.assertIsNotNone(r1.grad)
+        self.assertIsNotNone(r2.grad)
+        self.assertGreater(r1.grad.norm().item(), 0.0)
+        self.assertGreater(r2.grad.norm().item(), 0.0)
+
+    def test_explicit_checkpoint_baker_matches_runtime_weight_builder(self) -> None:
+        """Baking a checkpoint-shaped R1/R2 state should match the runtime effective weights."""
+        model = _FakeLlama(hidden_size=8, num_heads=2, num_layers=1)
+        before = {
+            "q": model.model.layers[0].self_attn.q_proj.weight.detach().clone(),
+            "v": model.model.layers[0].self_attn.v_proj.weight.detach().clone(),
+            "o": model.model.layers[0].self_attn.o_proj.weight.detach().clone(),
+            "down": model.model.layers[0].mlp.down_proj.weight.detach().clone(),
+            "head": model.lm_head.weight.detach().clone(),
+        }
+        r1 = get_rotation_matrix(8, mode="random", device="cpu", dtype=ROTATION_COMPUTE_DTYPE, seed=31)
+        r2 = get_rotation_matrix(4, mode="random", device="cpu", dtype=ROTATION_COMPUTE_DTYPE, seed=37)
+
+        bake_rotation_state_into_model(
+            model,
+            {"R1": r1, "R2": {"layer_0": r2}, "metadata": {"rotate_mode": "checkpoint"}},
+        )
+
+        expected_q, _ = build_runtime_linear_weight_and_bias(before["q"], None, r1, "input")
+        expected_v, _ = build_runtime_linear_weight_and_bias(before["v"], None, r1, "input", r2, "output", 4)
+        expected_o, _ = build_runtime_linear_weight_and_bias(before["o"], None, r1, "output", r2, "input", 4)
+        expected_down, _ = build_runtime_linear_weight_and_bias(before["down"], None, r1, "output")
+        expected_head, _ = build_runtime_linear_weight_and_bias(before["head"], None, r1, "input")
+
+        layer = model.model.layers[0]
+        self.assertTrue(torch.allclose(layer.self_attn.q_proj.weight, expected_q))
+        self.assertTrue(torch.allclose(layer.self_attn.v_proj.weight, expected_v))
+        self.assertTrue(torch.allclose(layer.self_attn.o_proj.weight, expected_o))
+        self.assertTrue(torch.allclose(layer.mlp.down_proj.weight, expected_down))
+        self.assertTrue(torch.allclose(model.lm_head.weight, expected_head))
+
+    def test_identity_checkpoint_baker_leaves_weights_unchanged(self) -> None:
+        """Identity R1/R2 should make the explicit baker a no-op on linear weights."""
+        model = _FakeLlama(hidden_size=8, num_heads=2, num_layers=2)
+        before = {name: module.weight.detach().clone() for name, module in model.named_modules() if isinstance(module, torch.nn.Linear)}
+
+        bake_rotation_state_into_model(model, identity_rotation_state(model))
+
+        after = {name: module.weight.detach().clone() for name, module in model.named_modules() if isinstance(module, torch.nn.Linear)}
+        self.assertEqual(set(before), set(after))
+        for name in before:
+            self.assertTrue(torch.equal(before[name], after[name]), msg=name)
+
+    def test_online_hadamard_weight_and_activation_pair_is_float_equivalent(self) -> None:
+        """The R3/R4-style input Hadamard is exact when the weight side is pre-rotated."""
+        x = torch.randn(2, 3, 8, dtype=torch.float32)
+        weight = torch.randn(5, 8, dtype=torch.float32)
+        bias = torch.randn(5, dtype=torch.float32)
+        hadamard = hadamard_matrix(4, device="cpu", dtype=ROTATION_COMPUTE_DTYPE)
+
+        baseline = torch.nn.functional.linear(x, weight, bias)
+        rotated_x = apply_block_hadamard(x, hadamard)
+        rotated_weight = apply_block_hadamard(weight, hadamard)
+        rotated = torch.nn.functional.linear(rotated_x, rotated_weight, bias)
+
+        self.assertTrue(torch.allclose(baseline, rotated, atol=1e-5, rtol=1e-5))
 
 
 if __name__ == "__main__":

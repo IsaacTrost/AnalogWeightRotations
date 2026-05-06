@@ -18,6 +18,6 @@ def _load_local_env() -> None:
 
 _load_local_env()
 
-WANDB_ENTITY = os.getenv("WANDB_ENTITY", "your_team_or_username")
-WANDB_PROJECT = os.getenv("WANDB_PROJECT", "aimc-rotations")
+WANDB_ENTITY = os.getenv("WANDB_ENTITY", "ao2844-columbia-university")
+WANDB_PROJECT = os.getenv("WANDB_PROJECT", "analog_rotation_dual_loss")
 WANDB_MODE = os.getenv("WANDB_MODE", "online")
