@@ -71,6 +71,7 @@ class AnalogPerplexityConfig:
     run_analog_rotated: bool = True
     use_wandb: bool = False
     wandb_name: Optional[str] = None
+    progress_every: int = 1
 
 
 def _load_dataset_text(dataset: str, split: str) -> str:
@@ -129,19 +130,40 @@ def build_packed_token_batches(
     return batches, int(n_chunks * max_length)
 
 
-def evaluate_perplexity(model: torch.nn.Module, batches: Sequence[dict]) -> dict:
+def evaluate_perplexity(
+    model: torch.nn.Module,
+    batches: Sequence[dict],
+    *,
+    run_label: str = "eval",
+    progress_every: int = 1,
+) -> dict:
     """Run causal-LM NLL over pre-packed batches and return NLL/perplexity."""
     total_nll = 0.0
     total_tokens = 0
     model.eval()
 
     with torch.no_grad():
-        for batch in batches:
+        num_batches = len(batches)
+        for batch_idx, batch in enumerate(batches, start=1):
+            if progress_every > 0 and (batch_idx == 1 or batch_idx % progress_every == 0 or batch_idx == num_batches):
+                batch_size, seq_len = batch["input_ids"].shape
+                print(
+                    f"[{run_label}] batch {batch_idx}/{num_batches} "
+                    f"(batch_size={batch_size}, seq_len={seq_len})",
+                    flush=True,
+                )
             outputs = model(**batch)
             batch_size, seq_len = batch["input_ids"].shape
             target_tokens = batch_size * max(seq_len - 1, 0)
             total_nll += float(outputs.loss.detach()) * target_tokens
             total_tokens += target_tokens
+            if progress_every > 0 and (batch_idx == 1 or batch_idx % progress_every == 0 or batch_idx == num_batches):
+                mean_nll = total_nll / max(total_tokens, 1)
+                print(
+                    f"[{run_label}] completed {batch_idx}/{num_batches} "
+                    f"tokens={total_tokens} nll={mean_nll:.6f}",
+                    flush=True,
+                )
 
     if total_tokens == 0:
         raise ValueError("No target tokens were evaluated.")
@@ -250,6 +272,8 @@ def run_evaluation(config: AnalogPerplexityConfig) -> dict:
         results["runs"]["float_prepared"] = evaluate_perplexity(
             model,
             get_batches(tokenizer, device),
+            run_label="float_prepared",
+            progress_every=config.progress_every,
         )
         del model
         if torch.cuda.is_available():
@@ -261,7 +285,12 @@ def run_evaluation(config: AnalogPerplexityConfig) -> dict:
             force_identity=True,
             online_hadamards=False,
         )
-        run = evaluate_perplexity(model, get_batches(tokenizer, device))
+        run = evaluate_perplexity(
+            model,
+            get_batches(tokenizer, device),
+            run_label="analog_identity",
+            progress_every=config.progress_every,
+        )
         run["converted_layers"] = converted
         run["rotation_mode"] = rotation_state["metadata"]["rotate_mode"]
         results["runs"]["analog_identity"] = run
@@ -275,7 +304,12 @@ def run_evaluation(config: AnalogPerplexityConfig) -> dict:
             force_identity=False,
             online_hadamards=config.online_hadamards,
         )
-        run = evaluate_perplexity(model, get_batches(tokenizer, device))
+        run = evaluate_perplexity(
+            model,
+            get_batches(tokenizer, device),
+            run_label="analog_rotated",
+            progress_every=config.progress_every,
+        )
         run["converted_layers"] = converted
         run["rotation_mode"] = rotation_state["metadata"]["rotate_mode"]
         run["checkpoint_path"] = None if config.identity_r1_r2 else config.checkpoint_path
@@ -405,6 +439,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-analog-rotated", action="store_true")
     parser.add_argument("--use-wandb", action="store_true")
     parser.add_argument("--wandb-name", default=None)
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=1,
+        help="Print eval progress every N batches. Use 0 to disable.",
+    )
     parser.add_argument("--json-output", default=None)
     return parser
 
@@ -434,6 +474,7 @@ def main() -> None:
         run_analog_rotated=not args.skip_analog_rotated,
         use_wandb=args.use_wandb,
         wandb_name=args.wandb_name,
+        progress_every=args.progress_every,
     )
     results = run_evaluation(config)
     _print_results(results)
