@@ -109,9 +109,12 @@ def build_weight_noise_only_config():
 
 def build_quant_only_config():
     """
-    8-bit DAC + ADC quantization only.
+    8-bit DAC/input quantization only.
 
-    Matches cfg_inp_quant() from 1layertests/explore_rotations.py.
+    The old 1-layer cfg_inp_quant() also set out_res and out_bound=1.0.
+    In a full transformer, that fixed ADC range clips every analog layer output
+    to +/-1 and dominates perplexity. Keep this preset as an isolated input
+    quantization test; ADC quantization needs calibrated per-layer bounds.
     """
     aihw = _require_aihwkit()
 
@@ -122,8 +125,8 @@ def build_quant_only_config():
     cfg.forward.inp_noise = 0.0
     cfg.forward.out_noise = 0.0
     cfg.forward.inp_res = 2**8 - 2
-    cfg.forward.out_res = 2**8 - 2
-    cfg.forward.out_bound = 1.0
+    cfg.forward.out_res = -1.0
+    cfg.forward.out_bound = -1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
     cfg.forward.noise_management = aihw["NoiseManagementType"].ABS_MAX
     cfg.noise_model = None
@@ -141,15 +144,17 @@ def build_quant_10bit_config():
 
 def build_ir_drop_quant_8bit_config():
     """
-    Cheap IR-drop plus 8-bit DAC/ADC quantization.
+    Cheap IR-drop plus 8-bit DAC/input quantization.
 
     Uses regular InferenceRPUConfig, not the expensive torch Thevenin IR-drop
-    tile. This is intended for faster full-model perplexity checks.
+    tile. Output ADC quantization is intentionally disabled here because a
+    fixed out_bound=1.0 clips full-model activations and overwhelms the IR-drop
+    signal. Use a calibrated ADC-bound preset for output quantization studies.
     """
     cfg = build_ir_drop_only_config()
     cfg.forward.inp_res = 2**8 - 2
-    cfg.forward.out_res = 2**8 - 2
-    cfg.forward.out_bound = 1.0
+    cfg.forward.out_res = -1.0
+    cfg.forward.out_bound = -1.0
     return cfg
 
 
@@ -270,6 +275,23 @@ def requires_program_analog_weights(hardware_preset: str) -> bool:
     return hardware_preset in HARDWARE_PRESETS_REQUIRING_PROGRAMMING
 
 
+def disable_mapping_fragmentation(config) -> None:
+    """
+    Disable AIHWKit's default layer splitting into many mapped sub-tiles.
+
+    Large transformer linears otherwise fragment into many 512x512 tiles, which
+    can make conversion require far more memory than the raw weights. Setting
+    both mapping limits to 0 asks AIHWKit to use one tile per Linear layer.
+    """
+    mapping = getattr(config, "mapping", None)
+    if mapping is None:
+        return
+    if hasattr(mapping, "max_input_size"):
+        mapping.max_input_size = 0
+    if hasattr(mapping, "max_output_size"):
+        mapping.max_output_size = 0
+
+
 def build_rpu_config(
     hardware_preset: str = "ideal_analog",
     *,
@@ -290,6 +312,8 @@ def build_rpu_config(
 
     if overrides:
         _apply_overrides(config, overrides)
+
+    disable_mapping_fragmentation(config)
 
     return copy.deepcopy(config)
 
