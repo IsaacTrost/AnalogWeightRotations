@@ -1,0 +1,9 @@
+{
+  "init_mode": "hadamard_D",
+  "num_bits": 6,
+  "num_steps": 50,
+  "ir_drop_coeff": 1,
+  "log_every": 5,
+  "use_wandb": true,
+  "checkpoint_path": "checkpoints/.5_ir_bits8_steps30.pt"
+}

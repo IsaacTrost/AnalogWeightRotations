@@ -109,12 +109,9 @@ def build_weight_noise_only_config():
 
 def build_quant_only_config():
     """
-    8-bit DAC/input quantization only.
+    8-bit DAC + ADC quantization only.
 
-    The old 1-layer cfg_inp_quant() also set out_res and out_bound=1.0.
-    In a full transformer, that fixed ADC range clips every analog layer output
-    to +/-1 and dominates perplexity. Keep this preset as an isolated input
-    quantization test; ADC quantization needs calibrated per-layer bounds.
+    Matches cfg_inp_quant() from 1layertests/explore_rotations.py.
     """
     aihw = _require_aihwkit()
 
@@ -125,14 +122,13 @@ def build_quant_only_config():
     cfg.forward.inp_noise = 0.0
     cfg.forward.out_noise = 0.0
     cfg.forward.inp_res = 2**8 - 2
-    cfg.forward.out_res = -1.0
+    cfg.forward.out_res = 2**8 - 2
     cfg.forward.out_bound = -1.0
     cfg.forward.bound_management = aihw["BoundManagementType"].NONE
     cfg.forward.noise_management = aihw["NoiseManagementType"].ABS_MAX
     cfg.noise_model = None
     cfg.drift_compensation = None
     return cfg
-
 
 def build_quant_10bit_config():
     """10-bit DAC + ADC quantization preset with calibrated AIHWKit scaling."""
@@ -151,10 +147,13 @@ def build_ir_drop_quant_8bit_config():
     fixed out_bound=1.0 clips full-model activations and overwhelms the IR-drop
     signal. Use a calibrated ADC-bound preset for output quantization studies.
     """
+    aihw = _require_aihwkit()
     cfg = build_ir_drop_only_config()
     cfg.forward.inp_res = 2**8 - 2
-    cfg.forward.out_res = -1.0
+    cfg.forward.out_res = 2**8 - 2
     cfg.forward.out_bound = -1.0
+    cfg.forward.bound_management = aihw["BoundManagementType"].NONE
+    cfg.forward.noise_management = aihw["NoiseManagementType"].ABS_MAX
     return cfg
 
 
