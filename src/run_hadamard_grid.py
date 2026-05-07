@@ -16,13 +16,13 @@ import torch
 
 from aihwkit.simulator.parameters.enums import WeightNoiseType
 
-from eval_analog_perplexity import (
+from src.eval_analog_perplexity import (
     AnalogPerplexityConfig,
     DEFAULT_ANALOG_TARGETS,
     run_evaluation,
 )
-from hardware_configs import build_rpu_config
-from llama_model import DEFAULT_MODEL_NAME, TORCH_DTYPE_CHOICES, resolve_torch_dtype
+from src.hardware_configs import build_rpu_config
+from src.llama_model import DEFAULT_MODEL_NAME, TORCH_DTYPE_CHOICES, resolve_torch_dtype
 
 
 DEFAULT_GRID_TARGETS = DEFAULT_ANALOG_TARGETS
