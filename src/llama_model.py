@@ -9,7 +9,7 @@ else:
     PreTrainedTokenizerBase = Any
 
 
-DEFAULT_MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+DEFAULT_MODEL_NAME = "TinyLlama/TinyLlama_v1.1"
 
 DEFAULT_TEXTS = [
     "The quick brown fox jumps over the lazy dog.",

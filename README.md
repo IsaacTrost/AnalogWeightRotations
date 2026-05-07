@@ -35,7 +35,7 @@ We are building a pipeline to automatically train and apply rotation matrices to
 
 Briefly describe the model(s) and stack you used:
 
-- **Model architecture:** TinyLlama/TinyLlama-1.1B-Chat-v1.0
+- **Model architecture:** TinyLlama/TinyLlama_v1.1
 - **Framework:** PyTorch 2.10, IBM/AIHWKIT 1.1.0
 - **Dataset:** name, size, license, and link.
 - **Custom layers or modifications:** The addition of rotation matrices r1-r4, as taught in Spinquant, but trained based on hardware non-idealities

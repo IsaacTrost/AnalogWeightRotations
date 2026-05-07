@@ -55,7 +55,7 @@ from transformers import AutoModel, AutoTokenizer
 # TinyLlama loader with RMSNorm absorption + WikiText calibration split
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+DEFAULT_MODEL_ID = "TinyLlama/TinyLlama_v1.1"
 
 _PROJ_TO_NORM_ATTR = {
     # MLP input projections sit after post_attention_layernorm
