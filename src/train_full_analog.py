@@ -26,6 +26,9 @@ import torch
 import torch.nn.functional as F
 import wandb
 
+from pathlib import Path
+from contextlib import nullcontext
+
 from src.llama_model import (
     DEFAULT_MODEL_NAME,
     TORCH_DTYPE_CHOICES,
@@ -98,6 +101,14 @@ class TrainFullAnalogConfig:
     use_wandb: bool = True
     checkpoint_path: Optional[str] = None
 
+    # Profiling
+    profile: bool = False
+    profile_dir: str = "profiles/train_full_analog"
+    profile_wait: int = 1
+    profile_warmup: int = 1
+    profile_active: int = 3
+    profile_record_shapes: bool = True
+    profile_with_stack: bool = False
 
 def _load_json_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
@@ -366,6 +377,32 @@ def _build_packed_batches(tokenizer, dataset, max_length, batch_size, device, se
         yield batch, labels, attn_mask
 
 
+def _build_profiler(config: TrainFullAnalogConfig):
+    """Create a PyTorch profiler for the train loop, or a no-op context."""
+    if not config.profile:
+        return nullcontext(None)
+
+    Path(config.profile_dir).mkdir(parents=True, exist_ok=True)
+
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if torch.cuda.is_available():
+        activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+    return torch.profiler.profile(
+        activities=activities,
+        schedule=torch.profiler.schedule(
+            wait=config.profile_wait,
+            warmup=config.profile_warmup,
+            active=config.profile_active,
+            repeat=1,
+        ),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(config.profile_dir),
+        record_shapes=config.profile_record_shapes,
+        profile_memory=True,
+        with_stack=config.profile_with_stack,
+    )
+
+
 def train_full_analog(config: TrainFullAnalogConfig) -> dict:
     if config.use_wandb:
         wandb.login(key=os.getenv("WANDB_API_KEY"))
@@ -439,48 +476,66 @@ def train_full_analog(config: TrainFullAnalogConfig) -> dict:
     )
 
     history = []
-    for step in range(config.num_steps):
-        input_ids, labels, attn_mask = next(batches)
+    prof_obj = None
+    with _build_profiler(config) as prof:
+        prof_obj = prof
+        for step in range(config.num_steps):
+            input_ids, labels, attn_mask = next(batches)
 
-        outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=labels)
-        analog_loss = outputs.loss
+            with torch.profiler.record_function("forward"):
+                outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=labels)
+                analog_loss = outputs.loss
 
-        optimizer.zero_grad(set_to_none=True)
-        analog_loss.backward()
-        optimizer.step()
+            with torch.profiler.record_function("backward"):
+                optimizer.zero_grad(set_to_none=True)
+                analog_loss.backward()
 
-        r1_grad_norm = float(rotation_params.R1.grad.norm()) if rotation_params.R1.grad is not None else float("nan")
-        eye = torch.eye(rotation_params.R1.shape[0], device=rotation_params.R1.device, dtype=rotation_params.R1.dtype)
-        r1_dist = float((rotation_params.R1.detach() - eye).norm())
+            with torch.profiler.record_function("optimizer_step"):
+                optimizer.step()
 
-        record = {
-            "step": step,
-            "analog_lm_loss": float(analog_loss.detach()),
-            "r1_grad_norm": r1_grad_norm,
-            "r1_dist": r1_dist,
-        }
+            r1_grad_norm = float(rotation_params.R1.grad.norm()) if rotation_params.R1.grad is not None else float("nan")
+            eye = torch.eye(rotation_params.R1.shape[0], device=rotation_params.R1.device, dtype=rotation_params.R1.dtype)
+            r1_dist = float((rotation_params.R1.detach() - eye).norm())
 
-        if config.train_r2:
-            r2_params = list(rotation_params.layer_R2.values())
-            r2_grads = [float(p.grad.norm()) for p in r2_params if p.grad is not None]
-            eye_r2 = torch.eye(r2_params[0].shape[0], device=r2_params[0].device, dtype=r2_params[0].dtype)
-            r2_dists = [float((p.detach() - eye_r2).norm()) for p in r2_params]
-            record["r2_grad_norm_mean"] = float(torch.tensor(r2_grads).mean()) if r2_grads else float("nan")
-            record["r2_dist_mean"] = float(torch.tensor(r2_dists).mean())
+            record = {
+                "step": step,
+                "analog_lm_loss": float(analog_loss.detach()),
+                "r1_grad_norm": r1_grad_norm,
+                "r1_dist": r1_dist,
+            }
 
-        history.append(record)
-        if config.use_wandb:
-            wandb.log(record)
+            if config.train_r2:
+                r2_params = list(rotation_params.layer_R2.values())
+                r2_grads = [float(p.grad.norm()) for p in r2_params if p.grad is not None]
+                eye_r2 = torch.eye(r2_params[0].shape[0], device=r2_params[0].device, dtype=r2_params[0].dtype)
+                r2_dists = [float((p.detach() - eye_r2).norm()) for p in r2_params]
+                record["r2_grad_norm_mean"] = float(torch.tensor(r2_grads).mean()) if r2_grads else float("nan")
+                record["r2_dist_mean"] = float(torch.tensor(r2_dists).mean())
 
-        if step % config.log_every == 0:
-            r2_info = (
-                f"  r2_grad={record['r2_grad_norm_mean']:.3e}  |R2-I|={record['r2_dist_mean']:.3e}"
-                if config.train_r2 else ""
+            history.append(record)
+            if config.use_wandb:
+                wandb.log(record)
+
+            if step % config.log_every == 0:
+                r2_info = (
+                    f"  r2_grad={record['r2_grad_norm_mean']:.3e}  |R2-I|={record['r2_dist_mean']:.3e}"
+                    if config.train_r2 else ""
+                )
+                print(
+                    f"step {step:4d}  analog_lm={record['analog_lm_loss']:.4f}  "
+                    f"r1_grad={r1_grad_norm:.3e}  |R1-I|={r1_dist:.3e}{r2_info}"
+                )
+
+            if prof is not None:
+                prof.step()
+
+    if config.profile and prof_obj is not None:
+        print(
+            prof_obj.key_averages().table(
+                sort_by="cuda_time_total" if torch.cuda.is_available() else "cpu_time_total",
+                row_limit=30,
             )
-            print(
-                f"step {step:4d}  analog_lm={record['analog_lm_loss']:.4f}  "
-                f"r1_grad={r1_grad_norm:.3e}  |R1-I|={r1_dist:.3e}{r2_info}"
-            )
+        )
 
     if config.use_wandb:
         wandb.finish()
@@ -531,6 +586,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--no-wandb", action="store_true")
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--profile-dir", default="profiles/train_full_analog")
+    parser.add_argument("--profile-wait", type=int, default=1)
+    parser.add_argument("--profile-warmup", type=int, default=1)
+    parser.add_argument("--profile-active", type=int, default=3)
+    parser.add_argument("--profile-no-record-shapes", action="store_true")
+    parser.add_argument("--profile-with-stack", action="store_true")
+
     return parser
 
 
@@ -559,6 +622,13 @@ def main() -> None:
             log_every=args.log_every,
             use_wandb=not args.no_wandb,
             checkpoint_path=args.checkpoint,
+            profile=args.profile,
+            profile_dir=args.profile_dir,
+            profile_wait=args.profile_wait,
+            profile_warmup=args.profile_warmup,
+            profile_active=args.profile_active,
+            profile_record_shapes=not args.profile_no_record_shapes,
+            profile_with_stack=args.profile_with_stack,
         )
     result = train_full_analog(config)
     print(f"final analog_lm_loss={result['final_analog_lm_loss']:.4f}")
