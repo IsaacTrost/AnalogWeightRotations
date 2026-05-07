@@ -10,8 +10,11 @@ Example:
 import argparse
 import json
 import math
+import multiprocessing as mp
 import os
-from dataclasses import dataclass
+import queue
+import traceback
+from dataclasses import dataclass, fields
 from typing import Optional, Sequence
 
 import torch
@@ -79,6 +82,44 @@ class AnalogPerplexityConfig:
     use_wandb: bool = False
     wandb_name: Optional[str] = None
     progress_every: int = 1
+    json_output_path: Optional[str] = None
+
+
+def _load_json_config(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        raw_config = json.load(f)
+    if not isinstance(raw_config, dict):
+        raise TypeError(f"Config file {path} must contain a JSON object.")
+
+    aliases = {
+        "checkpoint": "checkpoint_path",
+        "json_output": "json_output_path",
+    }
+    inverted_aliases = {
+        "skip_float_prepared": "run_float_prepared",
+        "skip_analog_identity": "run_analog_identity",
+        "skip_analog_rotated": "run_analog_rotated",
+    }
+    field_names = {field.name for field in fields(AnalogPerplexityConfig)}
+    config = {}
+    for raw_key, value in raw_config.items():
+        normalized_key = raw_key.replace("-", "_")
+        if normalized_key in inverted_aliases:
+            key = inverted_aliases[normalized_key]
+            value = not value
+        else:
+            key = aliases.get(normalized_key, normalized_key)
+        if key not in field_names:
+            valid = ", ".join(sorted(field_names | set(aliases) | set(inverted_aliases)))
+            raise ValueError(f"Unknown config key {raw_key!r} in {path}. Valid keys: {valid}")
+        config[key] = value
+
+    if "torch_dtype" in config:
+        config["torch_dtype"] = resolve_torch_dtype(config["torch_dtype"])
+    if config.get("device") == "auto":
+        config["device"] = None
+
+    return config
 
 
 def _load_dataset_text(dataset: str, split: str) -> str:
@@ -250,6 +291,140 @@ def _build_analog_model(
     return model, tokenizer, device, rotation_state, converted
 
 
+def _evaluate_single_run(config: AnalogPerplexityConfig, run_label: str) -> tuple[dict, int]:
+    """Run one eval slot inside one Python process."""
+    if run_label == "float_prepared":
+        model, tokenizer, device = _build_float_prepared(config)
+        batches, loaded_tokens = build_packed_token_batches(
+            tokenizer,
+            dataset=config.dataset,
+            split=config.split,
+            max_length=config.max_length,
+            batch_size=config.batch_size,
+            max_eval_tokens=config.max_eval_tokens,
+            device=device,
+        )
+        return (
+            evaluate_perplexity(
+                model,
+                batches,
+                run_label=run_label,
+                progress_every=config.progress_every,
+            ),
+            loaded_tokens,
+        )
+
+    if run_label == "analog_identity":
+        model, tokenizer, device, rotation_state, converted = _build_analog_model(
+            config,
+            force_identity=True,
+            online_hadamards=False,
+        )
+        batches, loaded_tokens = build_packed_token_batches(
+            tokenizer,
+            dataset=config.dataset,
+            split=config.split,
+            max_length=config.max_length,
+            batch_size=config.batch_size,
+            max_eval_tokens=config.max_eval_tokens,
+            device=device,
+        )
+        run = evaluate_perplexity(
+            model,
+            batches,
+            run_label=run_label,
+            progress_every=config.progress_every,
+        )
+        run["converted_layers"] = converted
+        run["rotation_mode"] = "identity"
+        return run, loaded_tokens
+
+    if run_label == "analog_rotated":
+        model, tokenizer, device, rotation_state, converted = _build_analog_model(
+            config,
+            force_identity=False,
+            online_hadamards=config.online_hadamards,
+        )
+        batches, loaded_tokens = build_packed_token_batches(
+            tokenizer,
+            dataset=config.dataset,
+            split=config.split,
+            max_length=config.max_length,
+            batch_size=config.batch_size,
+            max_eval_tokens=config.max_eval_tokens,
+            device=device,
+        )
+        run = evaluate_perplexity(
+            model,
+            batches,
+            run_label=run_label,
+            progress_every=config.progress_every,
+        )
+        run["converted_layers"] = converted
+        run["rotation_mode"] = (
+            "learned"
+            if config.checkpoint_path and not config.identity_r1_r2
+            else rotation_state["metadata"].get("rotate_mode", "checkpoint")
+        )
+        run["checkpoint_path"] = None if config.identity_r1_r2 else config.checkpoint_path
+        return run, loaded_tokens
+
+    raise ValueError(f"Unknown eval run label: {run_label}")
+
+
+def _run_single_evaluation_child(
+    config: AnalogPerplexityConfig,
+    run_label: str,
+    result_queue,
+) -> None:
+    try:
+        run, loaded_tokens = _evaluate_single_run(config, run_label)
+        result_queue.put(
+            {
+                "ok": True,
+                "run_label": run_label,
+                "run": run,
+                "loaded_tokens": loaded_tokens,
+            }
+        )
+    except BaseException:
+        result_queue.put(
+            {
+                "ok": False,
+                "run_label": run_label,
+                "traceback": traceback.format_exc(),
+            }
+        )
+
+
+def _run_single_evaluation_subprocess(config: AnalogPerplexityConfig, run_label: str) -> tuple[dict, int]:
+    ctx = mp.get_context("spawn")
+    result_queue = ctx.Queue()
+    process = ctx.Process(
+        target=_run_single_evaluation_child,
+        args=(config, run_label, result_queue),
+    )
+    process.start()
+    process.join()
+
+    try:
+        message = result_queue.get(timeout=5)
+    except queue.Empty as exc:
+        raise RuntimeError(
+            f"{run_label} subprocess exited with code {process.exitcode} without returning results."
+        ) from exc
+
+    if not message["ok"]:
+        raise RuntimeError(
+            f"{run_label} subprocess failed with exit code {process.exitcode}:\n"
+            f"{message['traceback']}"
+        )
+    if process.exitcode != 0:
+        raise RuntimeError(f"{run_label} subprocess exited with code {process.exitcode}.")
+
+    return message["run"], message["loaded_tokens"]
+
+
 def run_evaluation(config: AnalogPerplexityConfig) -> dict:
     """Evaluate requested float and analog baselines with shared dataset settings."""
     # Set rotation_mode to 'learned' if a checkpoint is provided and not using identity
@@ -280,75 +455,19 @@ def run_evaluation(config: AnalogPerplexityConfig) -> dict:
         "runs": {},
     }
 
-    batches = None
-
-    def get_batches(tokenizer, device):
-        nonlocal batches
-        if batches is None:
-            batches, loaded_tokens = build_packed_token_batches(
-                tokenizer,
-                dataset=config.dataset,
-                split=config.split,
-                max_length=config.max_length,
-                batch_size=config.batch_size,
-                max_eval_tokens=config.max_eval_tokens,
-                device=device,
-            )
-            results["loaded_tokens"] = loaded_tokens
-        return batches
-
+    requested_runs = []
     if config.run_float_prepared:
-        model, tokenizer, device = _build_float_prepared(config)
-        results["runs"]["float_prepared"] = evaluate_perplexity(
-            model,
-            get_batches(tokenizer, device),
-            run_label="float_prepared",
-            progress_every=config.progress_every,
-        )
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
+        requested_runs.append("float_prepared")
     if config.run_analog_identity:
-        model, tokenizer, device, rotation_state, converted = _build_analog_model(
-            config,
-            force_identity=True,
-            online_hadamards=False,
-        )
-        run = evaluate_perplexity(
-            model,
-            get_batches(tokenizer, device),
-            run_label="analog_identity",
-            progress_every=config.progress_every,
-        )
-        run["converted_layers"] = converted
-        run["rotation_mode"] = "identity"
-        results["runs"]["analog_identity"] = run
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
+        requested_runs.append("analog_identity")
     if config.run_analog_rotated:
-        model, tokenizer, device, rotation_state, converted = _build_analog_model(
-            config,
-            force_identity=False,
-            online_hadamards=config.online_hadamards,
-        )
-        run = evaluate_perplexity(
-            model,
-            get_batches(tokenizer, device),
-            run_label="analog_rotated",
-            progress_every=config.progress_every,
-        )
-        run["converted_layers"] = converted
-        run["rotation_mode"] = (
-            "learned" if config.checkpoint_path and not config.identity_r1_r2 else rotation_state["metadata"].get("rotate_mode", "checkpoint")
-        )
-        run["checkpoint_path"] = None if config.identity_r1_r2 else config.checkpoint_path
-        results["runs"]["analog_rotated"] = run
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        requested_runs.append("analog_rotated")
+
+    for run_label in requested_runs:
+        print(f"Starting {run_label} in a subprocess.", flush=True)
+        run, loaded_tokens = _run_single_evaluation_subprocess(config, run_label)
+        results["loaded_tokens"] = loaded_tokens
+        results["runs"][run_label] = run
 
     return results
 
@@ -412,6 +531,11 @@ def _log_wandb(results: dict, run_name: Optional[str] = None) -> None:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Evaluate trained R1/R2 rotations on AIHWKit analog perplexity."
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to a JSON config file whose keys match AnalogPerplexityConfig fields.",
     )
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
     parser.add_argument(
@@ -511,43 +635,47 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    config = AnalogPerplexityConfig(
-        model_name=args.model_name,
-        torch_dtype=resolve_torch_dtype(args.torch_dtype),
-        device=None if args.device in (None, "auto") else args.device,
-        checkpoint_path=args.checkpoint,
-        identity_r1_r2=args.identity_r1_r2,
-        rotation_mode=args.rotation_mode,
-        r2_mode=args.r2_mode,
-        seed=args.seed,
-        r2_seed_offset=args.r2_seed_offset,
-        dataset=args.dataset,
-        split=args.split,
-        max_length=args.max_length,
-        batch_size=args.batch_size,
-        max_eval_tokens=args.max_eval_tokens,
-        hardware_preset=args.hardware_preset,
-        analog_targets=tuple(args.analog_targets),
-        online_hadamards=args.online_hadamards,
-        page_analog_tiles=args.page_analog_tiles,
-        analog_storage_device=args.analog_storage_device,
-        analog_execution_device=args.analog_execution_device,
-        cpu_paged_analog_targets=tuple(args.cpu_paged_analog_targets),
-        clear_paged_cuda_cache=args.clear_paged_cuda_cache,
-        run_float_prepared=not args.skip_float_prepared,
-        run_analog_identity=not args.skip_analog_identity,
-        run_analog_rotated=not args.skip_analog_rotated,
-        use_wandb=args.use_wandb,
-        wandb_name=args.wandb_name,
-        progress_every=args.progress_every,
-    )
+    if args.config:
+        config = AnalogPerplexityConfig(**_load_json_config(args.config))
+    else:
+        config = AnalogPerplexityConfig(
+            model_name=args.model_name,
+            torch_dtype=resolve_torch_dtype(args.torch_dtype),
+            device=None if args.device in (None, "auto") else args.device,
+            checkpoint_path=args.checkpoint,
+            identity_r1_r2=args.identity_r1_r2,
+            rotation_mode=args.rotation_mode,
+            r2_mode=args.r2_mode,
+            seed=args.seed,
+            r2_seed_offset=args.r2_seed_offset,
+            dataset=args.dataset,
+            split=args.split,
+            max_length=args.max_length,
+            batch_size=args.batch_size,
+            max_eval_tokens=args.max_eval_tokens,
+            hardware_preset=args.hardware_preset,
+            analog_targets=tuple(args.analog_targets),
+            online_hadamards=args.online_hadamards,
+            page_analog_tiles=args.page_analog_tiles,
+            analog_storage_device=args.analog_storage_device,
+            analog_execution_device=args.analog_execution_device,
+            cpu_paged_analog_targets=tuple(args.cpu_paged_analog_targets),
+            clear_paged_cuda_cache=args.clear_paged_cuda_cache,
+            run_float_prepared=not args.skip_float_prepared,
+            run_analog_identity=not args.skip_analog_identity,
+            run_analog_rotated=not args.skip_analog_rotated,
+            use_wandb=args.use_wandb,
+            wandb_name=args.wandb_name,
+            progress_every=args.progress_every,
+            json_output_path=args.json_output,
+        )
     results = run_evaluation(config)
     _print_results(results)
     if config.use_wandb:
         _log_wandb(results, run_name=config.wandb_name)
-    if args.json_output:
-        os.makedirs(os.path.dirname(os.path.abspath(args.json_output)), exist_ok=True)
-        with open(args.json_output, "w", encoding="utf-8") as f:
+    if config.json_output_path:
+        os.makedirs(os.path.dirname(os.path.abspath(config.json_output_path)), exist_ok=True)
+        with open(config.json_output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
 
 
