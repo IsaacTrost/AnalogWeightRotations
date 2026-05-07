@@ -2,3 +2,9 @@
 wandb/
 */.ipynb_checkpoints/
 .env
+
+# Local model, dataset, and experiment artifacts.
+.cache/
+logs/
+outputs/
+tmp/
