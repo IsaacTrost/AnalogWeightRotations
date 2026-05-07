@@ -10,7 +10,10 @@ Example:
 import argparse
 import json
 import math
+import multiprocessing as mp
 import os
+import queue
+import traceback
 from dataclasses import dataclass, fields
 from typing import Optional, Sequence
 
@@ -288,6 +291,140 @@ def _build_analog_model(
     return model, tokenizer, device, rotation_state, converted
 
 
+def _evaluate_single_run(config: AnalogPerplexityConfig, run_label: str) -> tuple[dict, int]:
+    """Run one eval slot inside one Python process."""
+    if run_label == "float_prepared":
+        model, tokenizer, device = _build_float_prepared(config)
+        batches, loaded_tokens = build_packed_token_batches(
+            tokenizer,
+            dataset=config.dataset,
+            split=config.split,
+            max_length=config.max_length,
+            batch_size=config.batch_size,
+            max_eval_tokens=config.max_eval_tokens,
+            device=device,
+        )
+        return (
+            evaluate_perplexity(
+                model,
+                batches,
+                run_label=run_label,
+                progress_every=config.progress_every,
+            ),
+            loaded_tokens,
+        )
+
+    if run_label == "analog_identity":
+        model, tokenizer, device, rotation_state, converted = _build_analog_model(
+            config,
+            force_identity=True,
+            online_hadamards=False,
+        )
+        batches, loaded_tokens = build_packed_token_batches(
+            tokenizer,
+            dataset=config.dataset,
+            split=config.split,
+            max_length=config.max_length,
+            batch_size=config.batch_size,
+            max_eval_tokens=config.max_eval_tokens,
+            device=device,
+        )
+        run = evaluate_perplexity(
+            model,
+            batches,
+            run_label=run_label,
+            progress_every=config.progress_every,
+        )
+        run["converted_layers"] = converted
+        run["rotation_mode"] = "identity"
+        return run, loaded_tokens
+
+    if run_label == "analog_rotated":
+        model, tokenizer, device, rotation_state, converted = _build_analog_model(
+            config,
+            force_identity=False,
+            online_hadamards=config.online_hadamards,
+        )
+        batches, loaded_tokens = build_packed_token_batches(
+            tokenizer,
+            dataset=config.dataset,
+            split=config.split,
+            max_length=config.max_length,
+            batch_size=config.batch_size,
+            max_eval_tokens=config.max_eval_tokens,
+            device=device,
+        )
+        run = evaluate_perplexity(
+            model,
+            batches,
+            run_label=run_label,
+            progress_every=config.progress_every,
+        )
+        run["converted_layers"] = converted
+        run["rotation_mode"] = (
+            "learned"
+            if config.checkpoint_path and not config.identity_r1_r2
+            else rotation_state["metadata"].get("rotate_mode", "checkpoint")
+        )
+        run["checkpoint_path"] = None if config.identity_r1_r2 else config.checkpoint_path
+        return run, loaded_tokens
+
+    raise ValueError(f"Unknown eval run label: {run_label}")
+
+
+def _run_single_evaluation_child(
+    config: AnalogPerplexityConfig,
+    run_label: str,
+    result_queue,
+) -> None:
+    try:
+        run, loaded_tokens = _evaluate_single_run(config, run_label)
+        result_queue.put(
+            {
+                "ok": True,
+                "run_label": run_label,
+                "run": run,
+                "loaded_tokens": loaded_tokens,
+            }
+        )
+    except BaseException:
+        result_queue.put(
+            {
+                "ok": False,
+                "run_label": run_label,
+                "traceback": traceback.format_exc(),
+            }
+        )
+
+
+def _run_single_evaluation_subprocess(config: AnalogPerplexityConfig, run_label: str) -> tuple[dict, int]:
+    ctx = mp.get_context("spawn")
+    result_queue = ctx.Queue()
+    process = ctx.Process(
+        target=_run_single_evaluation_child,
+        args=(config, run_label, result_queue),
+    )
+    process.start()
+    process.join()
+
+    try:
+        message = result_queue.get(timeout=5)
+    except queue.Empty as exc:
+        raise RuntimeError(
+            f"{run_label} subprocess exited with code {process.exitcode} without returning results."
+        ) from exc
+
+    if not message["ok"]:
+        raise RuntimeError(
+            f"{run_label} subprocess failed with exit code {process.exitcode}:\n"
+            f"{message['traceback']}"
+        )
+    if process.exitcode != 0:
+        raise RuntimeError(f"{run_label} subprocess exited with code {process.exitcode}.")
+
+    return message["run"], message["loaded_tokens"]
+
+
 def run_evaluation(config: AnalogPerplexityConfig) -> dict:
     """Evaluate requested float and analog baselines with shared dataset settings."""
     # Set rotation_mode to 'learned' if a checkpoint is provided and not using identity
@@ -318,75 +455,19 @@ def run_evaluation(config: AnalogPerplexityConfig) -> dict:
         "runs": {},
     }
 
-    batches = None
-
-    def get_batches(tokenizer, device):
-        nonlocal batches
-        if batches is None:
-            batches, loaded_tokens = build_packed_token_batches(
-                tokenizer,
-                dataset=config.dataset,
-                split=config.split,
-                max_length=config.max_length,
-                batch_size=config.batch_size,
-                max_eval_tokens=config.max_eval_tokens,
-                device=device,
-            )
-            results["loaded_tokens"] = loaded_tokens
-        return batches
-
+    requested_runs = []
     if config.run_float_prepared:
-        model, tokenizer, device = _build_float_prepared(config)
-        results["runs"]["float_prepared"] = evaluate_perplexity(
-            model,
-            get_batches(tokenizer, device),
-            run_label="float_prepared",
-            progress_every=config.progress_every,
-        )
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
+        requested_runs.append("float_prepared")
     if config.run_analog_identity:
-        model, tokenizer, device, rotation_state, converted = _build_analog_model(
-            config,
-            force_identity=True,
-            online_hadamards=False,
-        )
-        run = evaluate_perplexity(
-            model,
-            get_batches(tokenizer, device),
-            run_label="analog_identity",
-            progress_every=config.progress_every,
-        )
-        run["converted_layers"] = converted
-        run["rotation_mode"] = "identity"
-        results["runs"]["analog_identity"] = run
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
+        requested_runs.append("analog_identity")
     if config.run_analog_rotated:
-        model, tokenizer, device, rotation_state, converted = _build_analog_model(
-            config,
-            force_identity=False,
-            online_hadamards=config.online_hadamards,
-        )
-        run = evaluate_perplexity(
-            model,
-            get_batches(tokenizer, device),
-            run_label="analog_rotated",
-            progress_every=config.progress_every,
-        )
-        run["converted_layers"] = converted
-        run["rotation_mode"] = (
-            "learned" if config.checkpoint_path and not config.identity_r1_r2 else rotation_state["metadata"].get("rotate_mode", "checkpoint")
-        )
-        run["checkpoint_path"] = None if config.identity_r1_r2 else config.checkpoint_path
-        results["runs"]["analog_rotated"] = run
-        del model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        requested_runs.append("analog_rotated")
+
+    for run_label in requested_runs:
+        print(f"Starting {run_label} in a subprocess.", flush=True)
+        run, loaded_tokens = _run_single_evaluation_subprocess(config, run_label)
+        results["loaded_tokens"] = loaded_tokens
+        results["runs"][run_label] = run
 
     return results
 
