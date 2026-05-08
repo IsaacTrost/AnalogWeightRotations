@@ -1,0 +1,12 @@
+{
+  "init_mode": "identity",
+  "hardware_preset": "ir_drop_only",
+  "rpu_overrides": {
+    "forward.ir_drop": 50.0
+  },
+  "num_steps": 200,
+  "lr": 0.1,
+  "log_every": 1,
+  "use_wandb": true,
+  "checkpoint_path": "checkpoints/large_ir.pt"
+}

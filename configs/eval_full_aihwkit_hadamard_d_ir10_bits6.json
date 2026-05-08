@@ -4,14 +4,11 @@
   "dataset": "wikitext-2",
   "split": "validation",
   "checkpoint_path": "checkpoints/full_aihwkit_hadamard_d_ir10_bits6_steps30.pt",
-  "hardware_preset": "ir_drop_quant_8bit",
+  "hardware_preset": "ir_drop_only",
   "rpu_overrides": {
-    "forward.ir_drop": 10.0,
-    "forward.inp_res": 62,
-    "forward.out_res": 62
+	 "forward.ir_drop": 50.0 
   },
   "max_eval_tokens": 8192,
-  "online_hadamards": true,
-  "run_float_prepared": true,
-  "max_length": 16
+  "online_hadamards": false,
+  "run_float_prepared": true
 }
