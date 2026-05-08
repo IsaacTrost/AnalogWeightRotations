@@ -1,23 +1,22 @@
-"""Plot FFN activation heatmaps under base/generated/trained rotation regimes.
+"""Plot FFN activation histograms under base/generated/trained rotation regimes.
 
 Examples:
   python src/plot_rotation_activation_heatmaps.py \
       --config configs/train_full_hadamard_d_ir0p5_bits8_steps30.json \
       --layer-idx 3 \
-      --output results/figures/layer3_ffn_activation_heatmaps.png
+      --output results/figures/layer3_ffn_activation_histograms.png
 
   python src/plot_rotation_activation_heatmaps.py \
       --config configs/train_full_hadamard_d_ir0p5_bits8_steps30.json \
       --layer-idx 3 \
       --ffn-point down_proj_input \
-      --output results/figures/layer3_down_proj_input_heatmaps.png
+      --output results/figures/layer3_down_proj_input_histograms.png
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 from collections.abc import Mapping
 from typing import Optional, Sequence
@@ -25,7 +24,6 @@ from typing import Optional, Sequence
 import matplotlib
 
 matplotlib.use("Agg")
-from matplotlib.colors import TwoSlopeNorm
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -39,6 +37,7 @@ from src.llama_model import (
 )
 from src.llama_prepare import prepare_model_for_rotation
 from src.llama_rotation import bake_rotation_state_into_model, generated_rotation_state
+from src.rotation_utils import hadamard_matrix, largest_power_of_two_divisor
 
 
 ROTATION_MODES = (
@@ -103,68 +102,134 @@ def _sample_texts(args: argparse.Namespace, config: Mapping[str, object]) -> lis
     return list(DEFAULT_TEXTS)
 
 
-def _display_array(activation: torch.Tensor, max_display_elements: int) -> tuple[np.ndarray, int]:
-    array = activation.detach().to(device="cpu", dtype=torch.float32).numpy()
-    if array.ndim == 3:
-        array = array.reshape(array.shape[0] * array.shape[1], array.shape[2])
-    elif array.ndim != 2:
-        array = array.reshape(-1, array.shape[-1])
+def _hist_values(activation: torch.Tensor, max_values: int) -> tuple[np.ndarray, int]:
+    values = activation.detach().to(device="cpu", dtype=torch.float32).numpy().ravel()
+    values = values[np.isfinite(values)]
+    if max_values <= 0 or values.size <= max_values:
+        return values, 1
 
-    if max_display_elements <= 0 or array.size <= max_display_elements:
-        return array, 1
+    stride = int(np.ceil(values.size / max_values))
+    return values[::stride], stride
 
-    stride = max(1, math.ceil(math.sqrt(array.size / max_display_elements)))
-    return array[::stride, ::stride], stride
+
+def _apply_block_hadamard(x: torch.Tensor, hadamard_block: torch.Tensor) -> torch.Tensor:
+    block_size = hadamard_block.shape[0]
+    dim = x.shape[-1]
+    if dim % block_size != 0:
+        raise ValueError(f"Last dim {dim} not divisible by Hadamard block size {block_size}.")
+    leading = x.shape[:-1]
+    blocks = x.reshape(*leading, dim // block_size, block_size)
+    h = hadamard_block.to(device=x.device, dtype=x.dtype)
+    return (blocks @ h).reshape(*leading, dim)
 
 
 def _symmetric_limit(arrays: Sequence[np.ndarray], percentile: float) -> float:
-    values = np.concatenate([np.ravel(array[np.isfinite(array)]) for array in arrays if array.size])
+    values = np.concatenate([array for array in arrays if array.size])
     if values.size == 0:
         return 1.0
     limit = float(np.percentile(np.abs(values), percentile))
     return limit if limit > 0 else 1.0
 
 
-def _plot_heatmaps(
-    images: Mapping[str, tuple[np.ndarray, int, tuple[int, ...]]],
+def _abs_limit(arrays: Sequence[np.ndarray], percentile: float) -> float:
+    values = np.concatenate([np.abs(array) for array in arrays if array.size])
+    if values.size == 0:
+        return 1.0
+    limit = float(np.percentile(values, percentile))
+    return limit if limit > 0 else 1.0
+
+
+def _activation_stats(values: np.ndarray) -> dict[str, float]:
+    abs_values = np.abs(values)
+    if abs_values.size == 0:
+        return {"p99": 0.0, "p999": 0.0, "max": 0.0}
+    return {
+        "p99": float(np.percentile(abs_values, 99.0)),
+        "p999": float(np.percentile(abs_values, 99.9)),
+        "max": float(abs_values.max()),
+    }
+
+
+def _plot_histograms(
+    histograms: Mapping[str, tuple[np.ndarray, int, tuple[int, ...]]],
     output: str,
     *,
     layer_idx: int,
     ffn_point: str,
-    cmap: str,
     percentile: float,
+    tail_percentile: float,
+    bins: int,
     dpi: int,
 ) -> None:
-    variants = list(images)
-    arrays = [images[variant][0] for variant in variants]
-    limit = _symmetric_limit(arrays, percentile)
-    norm = TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
+    variants = list(histograms)
+    arrays = [histograms[variant][0] for variant in variants]
+    signed_limit = _symmetric_limit(arrays, percentile)
+    tail_limit = _abs_limit(arrays, tail_percentile)
 
-    fig, axes = plt.subplots(
-        nrows=len(variants),
-        ncols=1,
-        figsize=(10, 2.7 * len(variants)),
-        squeeze=False,
-        constrained_layout=True,
+    fig, axes = plt.subplots(ncols=2, figsize=(13, 5.2), constrained_layout=True)
+    signed_axis, tail_axis = axes
+
+    max_stride = 1
+    shape_notes = []
+    for variant in variants:
+        values, stride, original_shape = histograms[variant]
+        max_stride = max(max_stride, stride)
+        shape_notes.append(f"{variant.replace(chr(10), ' ')}: {original_shape}")
+        label = variant.replace("\n", " ")
+        stats = _activation_stats(values)
+
+        signed_axis.hist(
+            values,
+            bins=bins,
+            range=(-signed_limit, signed_limit),
+            density=True,
+            histtype="step",
+            linewidth=1.8,
+            label=label,
+        )
+        tail_axis.hist(
+            np.abs(values),
+            bins=bins,
+            range=(0.0, tail_limit),
+            density=True,
+            histtype="step",
+            linewidth=1.8,
+            label=f"{label} p99={stats['p99']:.3g} p99.9={stats['p999']:.3g}",
+        )
+        tail_axis.axvline(stats["p99"], linewidth=1.0, alpha=0.65)
+        tail_axis.axvline(stats["p999"], linewidth=1.0, linestyle="--", alpha=0.65)
+        print(
+            f"{label}: p99_abs={stats['p99']:.6g} "
+            f"p99.9_abs={stats['p999']:.6g} max_abs={stats['max']:.6g}"
+        )
+
+    sample_note = f" (sample stride {max_stride})" if max_stride > 1 else ""
+    signed_axis.set_title(f"Signed activations, p{percentile:g} x-limit")
+    signed_axis.set_xlabel("activation value")
+    signed_axis.set_ylabel("density")
+    signed_axis.set_xlim(-signed_limit, signed_limit)
+    signed_axis.grid(alpha=0.25)
+    signed_axis.legend(fontsize=8)
+    signed_axis.text(
+        0.01,
+        0.99,
+        "\n".join(shape_notes),
+        transform=signed_axis.transAxes,
+        va="top",
+        ha="left",
+        fontsize=8,
+        bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
     )
 
-    last_image = None
-    max_stride = 1
-    for row_idx, variant in enumerate(variants):
-        array, stride, original_shape = images[variant]
-        max_stride = max(max_stride, stride)
-        axis = axes[row_idx][0]
-        last_image = axis.imshow(array, aspect="auto", cmap=cmap, norm=norm, interpolation="nearest")
-        axis.set_ylabel(variant, fontsize=10)
-        axis.set_xlabel("hidden / intermediate channel")
-        axis.set_title(f"captured shape={original_shape}", fontsize=9)
-        axis.set_yticks([])
+    tail_axis.set_title(f"|activation| tails, p{tail_percentile:g} x-limit")
+    tail_axis.set_xlabel("|activation value|")
+    tail_axis.set_ylabel("density (log)")
+    tail_axis.set_xlim(0.0, tail_limit)
+    tail_axis.set_yscale("log")
+    tail_axis.grid(alpha=0.25)
+    tail_axis.legend(fontsize=8)
 
-    if last_image is not None:
-        fig.colorbar(last_image, ax=axes.ravel().tolist(), shrink=0.8, label="activation value")
-
-    downsample_note = f" (display stride {max_stride})" if max_stride > 1 else ""
-    fig.suptitle(f"Layer {layer_idx} {ffn_point} activation heatmaps{downsample_note}", fontsize=13)
+    fig.suptitle(f"Layer {layer_idx} {ffn_point} activation distributions{sample_note}", fontsize=13)
     os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
     fig.savefig(output, dpi=dpi)
     plt.close(fig)
@@ -183,6 +248,7 @@ def _capture_ffn_activation(
     ffn_point: str,
     max_length: int,
     prepare_model: bool,
+    online_hadamards: bool,
 ) -> torch.Tensor:
     print(f"Capturing {variant} activations...")
     model, tokenizer = load_model_and_tokenizer(
@@ -202,9 +268,27 @@ def _capture_ffn_activation(
     captured: list[torch.Tensor] = []
     layer = model.model.layers[layer_idx]
     target = layer.mlp if ffn_point == "mlp_input" else layer.mlp.down_proj
+    r4_hadamard = None
+    if rotation_state is not None and online_hadamards and ffn_point == "down_proj_input":
+        block_size = largest_power_of_two_divisor(model.config.intermediate_size)
+        if block_size < 2:
+            raise ValueError(
+                f"intermediate_size {model.config.intermediate_size} has no power-of-two factor for R4."
+            )
+        r4_hadamard = hadamard_matrix(
+            block_size,
+            device=next(model.parameters()).device.type,
+            dtype=torch.float32,
+        )
+        print(f"  Capturing down_proj_input after online R4 Hadamard block={block_size}.")
+    elif rotation_state is not None and online_hadamards and ffn_point == "mlp_input":
+        print("  mlp_input includes baked R1/R2 context; R4 applies later at down_proj_input.")
 
     def capture_pre_hook(_module, inputs):
-        captured.append(inputs[0].detach().cpu())
+        activation = inputs[0]
+        if r4_hadamard is not None:
+            activation = _apply_block_hadamard(activation, r4_hadamard)
+        captured.append(activation.detach().cpu())
 
     handle = target.register_forward_pre_hook(capture_pre_hook)
     try:
@@ -229,15 +313,21 @@ def _capture_ffn_activation(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Plot FFN activations for base, generated random-Hadamard, and checkpoint rotations."
+        description="Plot FFN activation histograms for base, generated random-Hadamard, and checkpoint rotations."
     )
     parser.add_argument("--config", default=None, help="Optional JSON config to read model/checkpoint settings from.")
     parser.add_argument("--checkpoint", default=None, help="Rotation checkpoint containing R1 and R2/layers tensors.")
-    parser.add_argument("--output", default="results/figures/rotation_ffn_activation_heatmaps.png")
+    parser.add_argument("--output", default="results/figures/rotation_ffn_activation_histograms.png")
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
     parser.add_argument("--torch-dtype", default="float32", choices=["auto", "float16", "bfloat16", "float32", "float64"])
     parser.add_argument("--device", default="cpu", help="Device for loading the model; use 'auto' for CUDA if available.")
     parser.add_argument("--prepare-model", default=True, action=argparse.BooleanOptionalAction)
+    parser.add_argument(
+        "--online-hadamards",
+        default=None,
+        action=argparse.BooleanOptionalAction,
+        help="Apply online R4 in the captured down_proj_input for rotated regimes. Defaults to config value, else true.",
+    )
     parser.add_argument("--layer-idx", type=int, default=0)
     parser.add_argument("--ffn-point", default="mlp_input", choices=FFN_POINTS)
     parser.add_argument("--max-length", type=int, default=128)
@@ -250,9 +340,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--r2-mode", default=None, choices=ROTATION_MODES)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--r2-seed-offset", type=int, default=1)
-    parser.add_argument("--max-display-elements", type=int, default=2_000_000)
-    parser.add_argument("--percentile", type=float, default=99.5, help="Percentile used for symmetric color scaling.")
-    parser.add_argument("--cmap", default="coolwarm")
+    parser.add_argument("--max-display-elements", type=int, default=2_000_000,
+                        help="Maximum activation values sampled for histogramming. Use 0 for all values.")
+    parser.add_argument("--percentile", type=float, default=99.0, help="Percentile used for signed x-axis scaling.")
+    parser.add_argument("--tail-percentile", type=float, default=99.9,
+                        help="Percentile used for the absolute-value tail x-axis.")
+    parser.add_argument("--bins", type=int, default=160)
     parser.add_argument("--dpi", type=int, default=200)
     return parser
 
@@ -270,6 +363,11 @@ def main() -> None:
     torch_dtype = resolve_torch_dtype(torch_dtype_name)
     device = None if args.device == "auto" else args.device
     texts = _sample_texts(args, config)
+    online_hadamards = (
+        bool(config["online_hadamards"])
+        if args.online_hadamards is None and "online_hadamards" in config
+        else (True if args.online_hadamards is None else args.online_hadamards)
+    )
 
     checkpoint_state = _load_checkpoint(str(checkpoint))
 
@@ -279,7 +377,7 @@ def main() -> None:
         "Trained\ncheckpoint": checkpoint_state,
     }
 
-    images: dict[str, tuple[np.ndarray, int, tuple[int, ...]]] = {}
+    histograms: dict[str, tuple[np.ndarray, int, tuple[int, ...]]] = {}
     for variant, state in variants.items():
         if state == "generated":
             # Generate against a temporary model so the dimensions match the checkpoint/model exactly.
@@ -310,20 +408,22 @@ def main() -> None:
             ffn_point=args.ffn_point,
             max_length=args.max_length,
             prepare_model=args.prepare_model,
+            online_hadamards=online_hadamards,
         )
-        array, stride = _display_array(activation, args.max_display_elements)
-        images[variant] = (array, stride, tuple(activation.shape))
+        values, stride = _hist_values(activation, args.max_display_elements)
+        histograms[variant] = (values, stride, tuple(activation.shape))
 
-    _plot_heatmaps(
-        images,
+    _plot_histograms(
+        histograms,
         args.output,
         layer_idx=args.layer_idx,
         ffn_point=args.ffn_point,
-        cmap=args.cmap,
         percentile=args.percentile,
+        tail_percentile=args.tail_percentile,
+        bins=args.bins,
         dpi=args.dpi,
     )
-    print(f"Saved activation heatmaps to {args.output}")
+    print(f"Saved activation histograms to {args.output}")
 
 
 if __name__ == "__main__":

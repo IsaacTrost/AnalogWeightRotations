@@ -1,0 +1,18 @@
+{
+  "device": "cuda",
+  "torch_dtype": "float32",
+  "dataset": "wikitext-2",
+  "split": "validation",
+  "hardware_preset": "ir_drop_quant_8bit",
+  "rpu_overrides": {
+    "forward.ir_drop": 2.0,
+    "forward.inp_res": 62,
+    "forward.out_res": 62
+  },
+  "checkpoint_path": "checkpoints/.5_ir_bits8_steps30.pt",
+  "max_eval_tokens": 8192,
+  "online_hadamards": false,
+  "run_float_prepared": true 
+}
+
+

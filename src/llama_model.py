@@ -44,6 +44,7 @@ def load_model_and_tokenizer(
     model_name: str = DEFAULT_MODEL_NAME,
     device: Optional[str] = None,
     torch_dtype: Optional[torch.dtype] = None,
+    use_safetensors: bool = False,
 ) -> Tuple[PreTrainedModel, PreTrainedTokenizerBase]:
     """Load a Hugging Face causal LM and normalize its tokenizer padding config."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -53,7 +54,11 @@ def load_model_and_tokenizer(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch_dtype)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch_dtype,
+        use_safetensors=use_safetensors,
+    )
     if torch_dtype is not None:
         model = model.to(dtype=torch_dtype)
     model.to(target_device)
