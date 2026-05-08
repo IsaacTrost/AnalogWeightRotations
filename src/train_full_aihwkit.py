@@ -502,6 +502,9 @@ def train_full_aihwkit(config: TrainFullAIHWKITConfig) -> dict:
     )
 
     history = []
+    best_loss = float("inf")
+    best_step = None
+    best_state = None
     profiler_obj = None
     with _build_profiler(config) as profiler:
         profiler_obj = profiler
@@ -515,6 +518,20 @@ def train_full_aihwkit(config: TrainFullAIHWKITConfig) -> dict:
             with torch.profiler.record_function("backward"):
                 optimizer.zero_grad(set_to_none=True)
                 analog_loss.backward()
+
+            loss_value = float(analog_loss.detach())
+            if loss_value < best_loss:
+                best_loss = loss_value
+                best_step = step
+                best_state = {
+                    "R1": rotation_params.R1.detach().cpu().clone(),
+                    "R2": {
+                        key: value.detach().cpu().clone()
+                        for key, value in rotation_params.layer_R2.items()
+                    }
+                    if config.train_r2
+                    else {},
+                }
 
             with torch.profiler.record_function("optimizer_step"):
                 optimizer.step()
@@ -533,7 +550,9 @@ def train_full_aihwkit(config: TrainFullAIHWKITConfig) -> dict:
 
             record = {
                 "step": step,
-                "analog_lm_loss": float(analog_loss.detach()),
+                "analog_lm_loss": loss_value,
+                "best_analog_lm_loss": best_loss,
+                "best_step": best_step,
                 "r1_grad_norm": r1_grad_norm,
                 "r1_dist": r1_dist,
             }
@@ -578,22 +597,32 @@ def train_full_aihwkit(config: TrainFullAIHWKITConfig) -> dict:
             )
         )
 
-    result = {
-        "R1": rotation_params.R1.detach().cpu(),
-        "R2": {
-            key: value.detach().cpu()
-            for key, value in rotation_params.layer_R2.items()
+    if best_state is None:
+        best_state = {
+            "R1": rotation_params.R1.detach().cpu().clone(),
+            "R2": {
+                key: value.detach().cpu().clone()
+                for key, value in rotation_params.layer_R2.items()
+            }
+            if config.train_r2
+            else {},
         }
-        if config.train_r2
-        else {},
+    result = {
+        "R1": best_state["R1"],
+        "R2": best_state["R2"],
         "history": history,
         "final_analog_lm_loss": history[-1]["analog_lm_loss"] if history else None,
+        "best_analog_lm_loss": best_loss if history else None,
+        "best_step": best_step,
     }
 
     if config.checkpoint_path:
         os.makedirs(os.path.dirname(os.path.abspath(config.checkpoint_path)), exist_ok=True)
         torch.save({"R1": result["R1"], "R2": result["R2"]}, config.checkpoint_path)
-        print(f"Saved checkpoint to {config.checkpoint_path}")
+        print(
+            f"Saved best checkpoint from step {result['best_step']} "
+            f"(analog_lm={result['best_analog_lm_loss']:.4f}) to {config.checkpoint_path}"
+        )
         if config.use_wandb:
             wandb.save(config.checkpoint_path)
 
