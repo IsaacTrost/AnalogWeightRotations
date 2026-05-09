@@ -35,7 +35,7 @@ We are building a pipeline to automatically train and apply rotation matrices to
 
 Briefly describe the model(s) and stack you used:
 
-- **Model architecture:** TinyLlama/TinyLlama-1.1B-Chat-v1.0
+- **Model architecture:** TinyLlama/TinyLlama_v1.1
 - **Framework:** PyTorch 2.10, IBM/AIHWKIT 1.1.0
 - **Dataset:** name, size, license, and link.
 - **Custom layers or modifications:** The addition of rotation matrices r1-r4, as taught in Spinquant, but trained based on hardware non-idealities
@@ -117,7 +117,7 @@ docker build --no-cache -t aihwkit-min .
 ./run.sh
 ```
 
-**System requirements:** Docker or Podman with GPU passthrough enabled, NVIDIA Container Toolkit / NVIDIA container runtime, and a host NVIDIA driver compatible with the CUDA version in `nvcr.io/nvidia/pytorch:25.04-py3` (CUDA 12.x; 570-series drivers are recommended). CUDA itself does not need to be installed on the host because the container provides the CUDA user-space libraries. Use a GPU with at least 16 GB VRAM; 24 GB is preferred because AIHWKIT can be memory hungry and leaky.
+**System requirements:** Docker or Podman with GPU passthrough enabled, NVIDIA Container Toolkit / NVIDIA container runtime, and a host NVIDIA driver compatible with the CUDA version in `nvcr.io/nvidia/pytorch:25.04-py3` (CUDA 12.x; 570-series drivers are recommended). CUDA itself does not need to be installed on the host because the container provides the CUDA user-space libraries. Use a GPU with at least 16 GB VRAM; 24 GB is preferred because AIHWKIT can be memory hungry and leaky, so random crashes in validation scripts are possible.
 
 ### B. Experiment Tracking Dashboard
 
@@ -135,16 +135,10 @@ The dataset is *not* committed to the repository. It is small, and manually pull
 
 ### D. Training
 
-To reproduce the baseline:
+To produce the trained r1 and r2 results
 
 ```bash
-python src/train.py --config configs/baseline.yaml
-```
-
-To reproduce the optimized run:
-
-```bash
-python src/train.py --config configs/optimized.yaml
+python3 -m src.train_full_analog --config configs/train_full_hadamard_d_ir0p5_bits8_steps300.json
 ```
 
 ### E. Evaluation

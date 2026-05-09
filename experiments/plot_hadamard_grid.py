@@ -15,6 +15,7 @@ def load_summary(input_path: Path) -> pd.DataFrame:
     if df.empty:
         raise ValueError(f"No rows in {input_path}")
     df["seed"] = pd.to_numeric(df["seed"], errors="coerce")
+    df["ppl"] = pd.to_numeric(df["ppl"], errors="coerce")
     df["improvement_ratio"] = pd.to_numeric(df["improvement_ratio"], errors="coerce")
     df["identity_ppl"] = pd.to_numeric(df["identity_ppl"], errors="coerce")
     df["rotated_ppl"] = pd.to_numeric(df["rotated_ppl"], errors="coerce")
@@ -100,25 +101,129 @@ def plot_hadamard_heatmaps(hadamard: pd.DataFrame, output_dir: Path, metric: str
         print(f"saved {out}")
 
 
-def plot_absolute_ppl_bars(hadamard: pd.DataFrame, output_dir: Path) -> None:
-    for weight_noise, sub in hadamard.dropna(subset=["identity_ppl", "rotated_ppl"]).groupby("weight_noise"):
+def plot_all_method_improvement_heatmaps(df: pd.DataFrame, output_dir: Path) -> None:
+    plot_df = df[df["run_kind"].isin(["identity", "hadamard_D", "checkpoint"])].copy()
+    plot_df["series"] = [run_label(row) for row in plot_df.itertuples(index=False)]
+    plot_df["method_improvement_ratio"] = plot_df["improvement_ratio"]
+    plot_df.loc[plot_df["run_kind"] == "identity", "method_improvement_ratio"] = 1.0
+    plot_df = plot_df.dropna(
+        subset=["method_improvement_ratio", "ir_drop", "input_bits", "weight_noise"]
+    )
+    if plot_df.empty:
+        raise ValueError("No identity, Hadamard-D, or checkpoint rows with improvement values.")
+
+    for weight_noise, sub in plot_df.groupby("weight_noise"):
+        bits_order = input_bits_order(pd.Index(sub["input_bits"].unique()))
+        ir_order = sorted(sub["ir_drop"].unique())
+        preferred = ["Identity", "Hadamard-D"]
+        series_order = [name for name in preferred if name in set(sub["series"])]
+        series_order.extend(
+            name for name in sorted(sub["series"].unique()) if name not in series_order
+        )
+
+        fig, axes = plt.subplots(
+            1,
+            len(series_order),
+            figsize=(max(5 * len(series_order), 7), max(4, 0.6 * len(bits_order))),
+            squeeze=False,
+        )
+        values = sub["method_improvement_ratio"]
+        norm = None
+        if values.min() < 1.0 < values.max():
+            norm = TwoSlopeNorm(vcenter=1.0, vmin=values.min(), vmax=values.max())
+
+        image = None
+        for axis, series in zip(axes[0], series_order):
+            pivot = sub[sub["series"] == series].pivot_table(
+                index="input_bits",
+                columns="ir_drop",
+                values="method_improvement_ratio",
+                aggfunc="first",
+            )
+            pivot = pivot.reindex(index=bits_order, columns=ir_order)
+            image = axis.imshow(
+                pivot.values,
+                aspect="auto",
+                origin="upper",
+                cmap="RdYlGn",
+                norm=norm,
+            )
+            axis.set_title(series)
+            axis.set_xticks(range(len(ir_order)), [f"{value:g}" for value in ir_order])
+            axis.set_yticks(range(len(bits_order)), [str(int(value)) for value in bits_order])
+            axis.set_xlabel("IR drop")
+            axis.set_ylabel("Input bits (-1 = off)")
+            for row_idx, input_bits in enumerate(pivot.index):
+                for col_idx, ir_drop in enumerate(pivot.columns):
+                    value = pivot.loc[input_bits, ir_drop]
+                    if pd.notna(value):
+                        axis.text(col_idx, row_idx, f"{value:.2f}", ha="center", va="center")
+
+        if image is not None:
+            fig.colorbar(image, ax=axes[0].tolist(), label="Identity PPL / Method PPL")
+        fig.suptitle(f"Improvement Ratio by Method, weight_noise={weight_noise:g}")
+        out = output_dir / f"all_methods_improvement_ratio_wnoise{f'{weight_noise:g}'.replace('-', 'm').replace('.', 'p')}.png"
+        plt.savefig(out, dpi=160, bbox_inches="tight")
+        plt.close(fig)
+        print(f"saved {out}")
+
+
+def run_label(row) -> str:
+    if row.run_kind == "identity":
+        return "Identity"
+    if row.run_kind == "hadamard_D":
+        return "Hadamard-D"
+    if row.run_kind == "checkpoint":
+        checkpoint_label = getattr(row, "checkpoint_label", "")
+        if isinstance(checkpoint_label, str) and checkpoint_label:
+            return checkpoint_label
+        checkpoint_path = getattr(row, "checkpoint_path", "")
+        if isinstance(checkpoint_path, str) and checkpoint_path:
+            return Path(checkpoint_path).stem
+        return "Checkpoint"
+    return str(row.run_kind)
+
+
+def plot_absolute_ppl_bars(df: pd.DataFrame, output_dir: Path) -> None:
+    plot_df = df[df["run_kind"].isin(["identity", "hadamard_D", "checkpoint"])].copy()
+    plot_df = plot_df.dropna(subset=["ppl", "ir_drop", "input_bits", "weight_noise"])
+    if plot_df.empty:
+        raise ValueError("No identity, Hadamard-D, or checkpoint rows with PPL values.")
+
+    plot_df["series"] = [run_label(row) for row in plot_df.itertuples(index=False)]
+
+    for weight_noise, sub in plot_df.groupby("weight_noise"):
         sub = sub.copy()
         bits_order = input_bits_order(pd.Index(sub["input_bits"].unique()))
         sub["input_bits"] = pd.Categorical(sub["input_bits"], categories=bits_order, ordered=True)
-        sub = sub.sort_values(["input_bits", "ir_drop"])
 
-        x = list(range(len(sub)))
-        width = 0.38
-        identity_x = [value - width / 2 for value in x]
-        hadamard_x = [value + width / 2 for value in x]
-        labels = [
-            f"bits={int(row.input_bits)}\nir={row.ir_drop:g}"
-            for row in sub.itertuples(index=False)
-        ]
+        pivot = sub.pivot_table(
+            index=["input_bits", "ir_drop"],
+            columns="series",
+            values="ppl",
+            aggfunc="first",
+            observed=False,
+        )
+        pivot = pivot.sort_index(level=["input_bits", "ir_drop"])
 
-        plt.figure(figsize=(max(10, 0.55 * len(sub)), 5))
-        plt.bar(identity_x, sub["identity_ppl"], width=width, label="Identity")
-        plt.bar(hadamard_x, sub["rotated_ppl"], width=width, label="Hadamard-D")
+        preferred = ["Identity", "Hadamard-D"]
+        series_order = [name for name in preferred if name in pivot.columns]
+        series_order.extend(name for name in pivot.columns if name not in series_order)
+        pivot = pivot[series_order]
+
+        x = list(range(len(pivot)))
+        width = min(0.8 / max(len(pivot.columns), 1), 0.28)
+        labels = [f"bits={int(bits)}\nir={ir:g}" for bits, ir in pivot.index]
+
+        plt.figure(figsize=(max(10, 0.65 * len(pivot)), 5))
+        for series_idx, series in enumerate(pivot.columns):
+            offset = (series_idx - (len(pivot.columns) - 1) / 2) * width
+            plt.bar(
+                [value + offset for value in x],
+                pivot[series],
+                width=width,
+                label=series,
+            )
         plt.xticks(x, labels, rotation=60, ha="right")
         plt.ylabel("Perplexity")
         plt.xlabel("Hardware cell")
@@ -141,6 +246,12 @@ def main() -> None:
         choices=["improvement_ratio", "rotated_ppl"],
         help="Heatmap value. improvement_ratio > 1 means Hadamard-D beats identity.",
     )
+    parser.add_argument(
+        "--max-ir-drop",
+        type=float,
+        default=2.0,
+        help="Only plot hardware cells with ir_drop <= this value.",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -148,13 +259,18 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     df = load_summary(input_path)
+    df = df[df["ir_drop"] <= args.max_ir_drop].copy()
+    if df.empty:
+        raise ValueError(f"No rows remain after filtering ir_drop <= {args.max_ir_drop:g}.")
     hadamard = hadamard_table(df, args.metric)
     hadamard_csv = output_dir / "hadamard_by_cell.csv"
     hadamard.to_csv(hadamard_csv, index=False)
     print(f"saved {hadamard_csv}")
 
     plot_hadamard_heatmaps(hadamard, output_dir, args.metric)
-    plot_absolute_ppl_bars(hadamard, output_dir)
+    if args.metric == "improvement_ratio":
+        plot_all_method_improvement_heatmaps(df, output_dir)
+    plot_absolute_ppl_bars(df, output_dir)
 
 
 if __name__ == "__main__":

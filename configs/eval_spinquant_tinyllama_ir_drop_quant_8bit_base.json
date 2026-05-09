@@ -1,0 +1,19 @@
+{
+  "device": "cuda",
+  "torch_dtype": "float32",
+  "dataset": "wikitext-2",
+  "split": "validation",
+  "hardware_preset": "ir_drop_only",
+  "rpu_overrides": {
+    "forward.ir_drop": 20.0
+  },
+  "rotation_mode": "hadamard_D",
+  "r2_mode": "hadamard_D",
+  "seed": 0,
+  "r2_seed_offset": 1,
+  "max_eval_tokens": 8192,
+  "online_hadamards": false,
+  "run_float_prepared": true 
+}
+
+
