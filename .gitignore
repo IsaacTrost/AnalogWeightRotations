@@ -1,10 +1,5 @@
 */__pycache__/*
 wandb/
 */.ipynb_checkpoints/
+results/
 .env
-
-# Local model, dataset, and experiment artifacts.
-.cache/
-logs/
-outputs/
-tmp/
