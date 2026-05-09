@@ -9,5 +9,6 @@ cd "$SCRIPT_DIR"
 sudo docker run --gpus all -it --rm \
   -p 8888:8888 \
   -v "$(pwd)":/workspace \
+  -v "$HOME/.cache/huggingface":/root/.cache/huggingface \
   --env-file .env \
   aihwkit-min

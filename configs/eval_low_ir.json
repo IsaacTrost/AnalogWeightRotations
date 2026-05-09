@@ -1,0 +1,15 @@
+{
+  "device": "cuda",
+  "torch_dtype": "float32",
+  "dataset": "wikitext-2",
+  "split": "validation",
+  "hardware_preset": "ir_drop_only",
+  "rpu_overrides": {
+    "forward.ir_drop": 20.0
+  },
+  "checkpoint_path": "checkpoints/full_aihwkit_only_ir_drop.pt",
+  "max_eval_tokens": 8192,
+  "online_hadamards": false,
+  "run_analog_identity": false,
+  "run_float_prepared": true 
+}
