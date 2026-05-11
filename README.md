@@ -18,12 +18,12 @@
 
 - **GitHub repository:** [https://github.com/IsaacTrost/AnalogWeightRotations](https://github.com/IsaacTrost/AnalogWeightRotations)
 - **Final report:** [`deliverables/HPML_Final_Report.pdf`](deliverables/HPML_Final_Report.pdf)
-- **Final presentation:** [`deliverables/HPML_Final_Presentation.pptx`](deliverables/HPML_Final_Presentation.pptx)
+- **Final presentation:** [`deliverables/HPML_Final_Presentation.pptx`](deliverables/HPML_Final_Presentation.pptx) Please note that the slides reflect outdated results with lower IR values, we did not change the config until later. The results are still valid, but focus more on IR than quantization
 - **Experiment-tracking dashboard:** [W&B Final report](https://wandb.ai/ao2844-columbia-university/aimc-rotations/reports/Final-report--VmlldzoxNjgyNTE5Mw)
 
 The final report PDF and the presentation file are checked into the `deliverables/` folder of this repository **and** uploaded to CourseWorks.
 
-The dashboard does not show up, as our project was not conducive to excessive logging. It does show the training runs we made with various configs, however, as well as the grids showing performance of the trained checkpoints compared to the baseline which is representative of the effectivness of this method. 
+The dashboard is not excessive, as our project was not conducive to excessive logging. It does show the training runs we made with various configs, however, as well as the grids showing performance of the trained checkpoints compared to the baseline which is representative of the effectivness of this method. 
 
 ---
 
